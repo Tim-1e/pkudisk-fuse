@@ -15,6 +15,7 @@ var (
 	ErrPermission = errors.New("remote permission denied")
 	ErrConflict   = errors.New("remote revision changed")
 	ErrQuota      = errors.New("remote quota exceeded")
+	ErrSizeLimit  = errors.New("remote file size limit exceeded")
 	ErrPending    = errors.New("operation requires server approval")
 )
 
@@ -63,25 +64,34 @@ func (e *Entry) UnmarshalJSON(data []byte) error {
 }
 
 type APIError struct {
-	Status int
-	Code   int
-	Kind   error
+	Status     int
+	Code       int
+	Kind       error
+	LimitBytes int64
 }
 
 func (e *APIError) Error() string {
+	if errors.Is(e.Kind, ErrSizeLimit) && e.LimitBytes > 0 {
+		return fmt.Sprintf("AnyShare HTTP %d, code %d: %v (limit: %d bytes)", e.Status, e.Code, e.Kind, e.LimitBytes)
+	}
 	return fmt.Sprintf("AnyShare HTTP %d, code %d: %v", e.Status, e.Code, e.Kind)
 }
 func (e *APIError) Unwrap() error { return e.Kind }
 
 func responseError(status int, data []byte) error {
 	var v struct {
-		Code int `json:"code"`
+		Code   int `json:"code"`
+		Detail struct {
+			FileLimitSize int64 `json:"file_limit_size"`
+		} `json:"detail"`
 	}
 	_ = json.Unmarshal(data, &v)
 	kind := errors.New("remote request failed")
 	switch {
 	case status == 202:
 		kind = ErrPending
+	case v.Code == 403002070:
+		kind = ErrSizeLimit
 	case v.Code == 403002040 || v.Code == 403002041 || v.Code == 403002039 || status == 507:
 		kind = ErrQuota
 	case v.Code == 403002015 || v.Code == 403002016 || status == 409 || status == 412:
@@ -93,7 +103,7 @@ func responseError(status int, data []byte) error {
 	case status == 401 || status == 403:
 		kind = ErrPermission
 	}
-	return &APIError{Status: status, Code: v.Code, Kind: kind}
+	return &APIError{Status: status, Code: v.Code, Kind: kind, LimitBytes: max(0, v.Detail.FileLimitSize)}
 }
 
 // ValidName rejects paths, rather than letting an API call escape its parent.

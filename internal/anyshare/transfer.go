@@ -25,12 +25,9 @@ type uploadStart struct {
 	Request  signedRequest `json:"authrequest"`
 }
 
-const (
-	// The portal and desktop client both use ranged GETs for large downloads.
-	// Keeping each request below 512 MiB avoids the 2 GiB portal response cap
-	// while retaining streaming behaviour.
-	downloadRangeSize int64 = 512 << 20
-)
+// Bound each streaming GET so a long download can renew its signed URL between
+// ranges. This is a request size, not a whole-file limit.
+const downloadRangeSize int64 = 512 << 20
 
 func (c *Client) signed(ctx context.Context, auth signedRequest, body io.Reader, length int64, headers http.Header) (*http.Response, error) {
 	if len(auth) < 2 {
@@ -89,10 +86,8 @@ func (c *Client) ReadAt(ctx context.Context, e Entry, dest []byte, off int64) (i
 	if off >= e.Size || len(dest) == 0 {
 		return 0, nil
 	}
-	end := off + int64(len(dest)) - 1
-	if end >= e.Size {
-		end = e.Size - 1
-	}
+	length := min(int64(len(dest)), e.Size-off)
+	end := off + length - 1
 	auth, err := c.downloadRequest(ctx, e)
 	if err != nil {
 		return 0, err
@@ -124,9 +119,8 @@ func (c *Client) Download(ctx context.Context, e Entry, dest io.Writer) error {
 	return c.downloadRanges(ctx, e, dest, downloadRangeSize)
 }
 
-// downloadRanges streams a file through bounded ranged requests.  Besides
-// avoiding response-size limits, obtaining a fresh signed URL for each range
-// keeps long transfers from depending on one expiring object-storage URL.
+// downloadRanges obtains a fresh signed URL for each bounded range, retaining
+// the selected revision and checking the response before accepting its bytes.
 func (c *Client) downloadRanges(ctx context.Context, e Entry, dest io.Writer, rangeSize int64) error {
 	if rangeSize <= 0 {
 		return errors.New("invalid download range size")
@@ -159,13 +153,14 @@ func (c *Client) downloadRanges(ctx context.Context, e Entry, dest io.Writer, ra
 		}
 
 		n, copyErr := io.CopyN(dest, resp.Body, length)
-		var extra [1]byte
-		extraN, extraErr := resp.Body.Read(extra[:])
-		resp.Body.Close()
 		if copyErr != nil {
+			resp.Body.Close()
 			return copyErr
 		}
-		if n != length || extraN != 0 || (extraErr != nil && !errors.Is(extraErr, io.EOF)) {
+		var extra [1]byte
+		extraN, extraErr := io.ReadFull(resp.Body, extra[:])
+		resp.Body.Close()
+		if n != length || extraN != 0 || !errors.Is(extraErr, io.EOF) {
 			return errors.New("incomplete or oversized download range")
 		}
 		off += n
@@ -178,6 +173,21 @@ func (c *Client) downloadRanges(ctx context.Context, e Entry, dest io.Writer, ra
 func (c *Client) Upload(ctx context.Context, parent, name string, existing *Entry, data io.ReaderAt, size int64, mtime time.Time) (Entry, error) {
 	if !ValidName(name) || size < 0 {
 		return Entry{}, errors.New("invalid upload metadata")
+	}
+	// osoption supplies the storage limits used by the official desktop
+	// uploader. Plan before creating a remote upload so a large file never
+	// falls through to the single-request endpoint.
+	var partSize int64
+	if size > 0 && c.PartSize > 0 {
+		var limits multipartLimits
+		if err := c.post(ctx, "/efast/v1/file/osoption", nil, &limits); err != nil {
+			return Entry{}, fmt.Errorf("get multipart upload limits: %w", err)
+		}
+		var err error
+		partSize, err = selectMultipartPartSize(size, c.PartSize, limits)
+		if err != nil {
+			return Entry{}, err
+		}
 	}
 	body := map[string]any{"docid": parent, "name": name, "length": size, "ondup": 1, "client_mtime": mtime.UnixMicro()}
 	if existing != nil {
@@ -193,17 +203,10 @@ func (c *Client) Upload(ctx context.Context, parent, name string, existing *Entr
 	}
 	var start uploadStart
 	var err error
-	// The desktop sync client always uses the multipart flow.  Use it for
-	// every non-empty upload so the ordinary osbeginupload request-size limit
-	// cannot reject a file before it reaches object storage.
-	if size > 0 && c.PartSize > 0 {
-		partSize, maxParts, sizeErr := c.multipartPartSize(ctx, size, c.PartSize)
-		if sizeErr != nil {
-			return Entry{}, sizeErr
-		}
+	if partSize > 0 && size > partSize {
 		err = c.post(ctx, "/efast/v1/file/osinitmultiupload", body, &start)
 		if err == nil {
-			err = c.uploadParts(ctx, start, data, size, partSize, maxParts)
+			err = c.uploadParts(ctx, start, data, size, partSize)
 		}
 	} else {
 		body["reqmethod"] = "POST"
@@ -260,77 +263,40 @@ func (c *Client) uploadSingle(ctx context.Context, start uploadStart, data io.Re
 }
 
 type multipartLimits struct {
-	MinSize  int64
-	MaxSize  int64
-	MaxParts int64
+	MinSize  int64 `json:"partminsize"`
+	MaxSize  int64 `json:"partmaxsize"`
+	MaxParts int64 `json:"partmaxnum"`
 }
-
-const maxInt64 = int64(^uint64(0) >> 1)
 
 func selectMultipartPartSize(size, configured int64, limits multipartLimits) (int64, error) {
 	if size <= 0 || configured <= 0 {
-		return configured, nil
+		return 0, errors.New("file size and preferred upload part size must be positive")
 	}
-	if limits.MinSize < 0 || limits.MaxSize <= 0 || limits.MaxParts <= 0 || limits.MinSize > limits.MaxSize {
+	if limits.MinSize <= 0 || limits.MaxSize <= 0 || limits.MaxParts <= 0 || limits.MinSize > limits.MaxSize {
 		return 0, errors.New("server returned invalid multipart upload limits")
-	}
-	if limits.MaxSize <= maxInt64/limits.MaxParts && size > limits.MaxSize*limits.MaxParts {
-		return 0, fmt.Errorf("file exceeds the server multipart capacity of %d bytes", limits.MaxSize*limits.MaxParts)
-	}
-	partSize := configured
-	if partSize < limits.MinSize {
-		partSize = limits.MinSize
-	}
-	if partSize > limits.MaxSize {
-		partSize = limits.MaxSize
 	}
 	required := size / limits.MaxParts
 	if size%limits.MaxParts != 0 {
 		required++
 	}
-	if required > partSize {
-		partSize = required
+	if required > limits.MaxSize {
+		// If ceil(size / MaxParts) exceeds MaxSize, this product is smaller
+		// than size and therefore fits in int64.
+		return 0, fmt.Errorf("%w: server multipart capacity is %d bytes", ErrSizeLimit, limits.MaxSize*limits.MaxParts)
 	}
-	if partSize > limits.MaxSize {
-		return 0, fmt.Errorf("file exceeds the server multipart capacity of %d bytes", limits.MaxSize*limits.MaxParts)
-	}
-	return partSize, nil
+	return max(required, min(max(configured, limits.MinSize), limits.MaxSize)), nil
 }
 
-func (c *Client) multipartPartSize(ctx context.Context, size, configured int64) (int64, int64, error) {
-	var options struct {
-		PartMinSize int64 `json:"partminsize"`
-		PartMaxSize int64 `json:"partmaxsize"`
-		PartMaxNum  int64 `json:"partmaxnum"`
-	}
-	if err := c.post(ctx, "/efast/v1/file/osoption", nil, &options); err != nil {
-		return 0, 0, fmt.Errorf("get multipart upload limits: %w", err)
-	}
-	limits := multipartLimits{
-		MinSize:  options.PartMinSize,
-		MaxSize:  options.PartMaxSize,
-		MaxParts: options.PartMaxNum,
-	}
-	partSize, err := selectMultipartPartSize(size, configured, limits)
-	return partSize, limits.MaxParts, err
-}
-
-func (c *Client) uploadParts(ctx context.Context, start uploadStart, data io.ReaderAt, size, partSize, maxParts int64) error {
+func (c *Client) uploadParts(ctx context.Context, start uploadStart, data io.ReaderAt, size, partSize int64) error {
 	if start.UploadID == "" || start.ID == "" || start.Rev == "" {
 		return errors.New("incomplete multipart upload response")
 	}
 	if partSize <= 0 {
 		return errors.New("invalid multipart part size")
 	}
-	if maxParts <= 0 {
-		return errors.New("invalid multipart part count")
-	}
 	count := size / partSize
 	if size%partSize != 0 {
 		count++
-	}
-	if count > maxParts {
-		return errors.New("file exceeds the server multipart part limit")
 	}
 	info := map[string]any{}
 	for part := int64(1); part <= count; part++ {

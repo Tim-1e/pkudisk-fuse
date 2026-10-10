@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,20 @@ import (
 	"testing"
 	"time"
 )
+
+func TestResponseErrorReportsFileSizeLimit(t *testing.T) {
+	err := responseError(403, []byte(`{"code":403002070,"detail":{"file_limit_size":104857600}}`))
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("error = %v, want ErrSizeLimit", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.LimitBytes != 104857600 {
+		t.Fatalf("API error = %#v, want 100 MiB limit", apiErr)
+	}
+	if !strings.Contains(err.Error(), "104857600") {
+		t.Fatalf("error omitted the server limit: %v", err)
+	}
+}
 
 func TestSelectMultipartPartSizeKeepsPartCountWithinLimit(t *testing.T) {
 	const maxMultipartParts int64 = 10000
@@ -29,7 +44,7 @@ func TestSelectMultipartPartSizeKeepsPartCountWithinLimit(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := selectMultipartPartSize(test.size, test.configured, multipartLimits{MaxSize: maxInt64, MaxParts: maxMultipartParts})
+			got, err := selectMultipartPartSize(test.size, test.configured, multipartLimits{MinSize: 1, MaxSize: int64(^uint64(0) >> 1), MaxParts: maxMultipartParts})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +135,7 @@ func TestUploadUsesKnownContentLength(t *testing.T) {
 	}
 }
 
-func TestUploadUsesMultipartFlowForSmallNonEmptyFiles(t *testing.T) {
+func TestUploadUsesNegotiatedMultipartFlowWhenNeeded(t *testing.T) {
 	data := []byte("small")
 	var server *httptest.Server
 	var endpoints []string
@@ -128,17 +143,27 @@ func TestUploadUsesMultipartFlowForSmallNonEmptyFiles(t *testing.T) {
 		endpoints = append(endpoints, r.URL.Path)
 		switch r.URL.Path {
 		case "/api/efast/v1/file/osoption":
-			_ = json.NewEncoder(w).Encode(map[string]any{"partminsize": 5 << 20, "partmaxsize": 5 << 30, "partmaxnum": 10000})
+			_ = json.NewEncoder(w).Encode(map[string]any{"partminsize": 1, "partmaxsize": 10, "partmaxnum": 2})
 		case "/api/efast/v1/file/osinitmultiupload":
 			_ = json.NewEncoder(w).Encode(map[string]any{"docid": "gns://library/file", "name": "small.bin", "rev": "rev-1", "uploadid": "upload-1"})
 		case "/api/efast/v1/file/osuploadpart":
-			_ = json.NewEncoder(w).Encode(map[string]any{"authrequests": map[string]any{"1": []string{"PUT", server.URL + "/objects/1"}}})
-		case "/objects/1":
+			var request struct {
+				Parts string `json:"parts"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"authrequests": map[string]any{request.Parts: []string{"PUT", server.URL + "/objects/" + request.Parts}}})
+		case "/objects/1", "/objects/2":
+			part := strings.TrimPrefix(r.URL.Path, "/objects/")
+			partNumber := int(part[0] - '0')
+			start := (partNumber - 1) * 4
+			want := data[start:min(start+4, len(data))]
 			if r.Method != http.MethodPut {
 				t.Errorf("part method = %s, want PUT", r.Method)
 			}
-			if got, err := io.ReadAll(r.Body); err != nil || !bytes.Equal(got, data) {
-				t.Errorf("part body = %q, err = %v", got, err)
+			if got, err := io.ReadAll(r.Body); err != nil || !bytes.Equal(got, want) {
+				t.Errorf("part body = %q, want %q, err = %v", got, want, err)
 			}
 			w.Header().Set("ETag", "etag-1")
 			w.WriteHeader(http.StatusNoContent)
@@ -160,7 +185,7 @@ func TestUploadUsesMultipartFlowForSmallNonEmptyFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.PartSize = 16 << 20
+	client.PartSize = 4
 	entry, err := client.Upload(context.Background(), "gns://library", "small.bin", nil, bytes.NewReader(data), int64(len(data)), time.Now())
 	if err != nil {
 		t.Fatal(err)

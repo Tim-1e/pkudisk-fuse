@@ -200,6 +200,8 @@ func errno(err error) syscall.Errno {
 		return syscall.EBUSY
 	case errors.Is(err, anyshare.ErrQuota):
 		return syscall.ENOSPC
+	case errors.Is(err, anyshare.ErrSizeLimit):
+		return syscall.EFBIG
 	case errors.Is(err, anyshare.ErrPending):
 		return syscall.EACCES
 	case errors.Is(err, context.Canceled):
