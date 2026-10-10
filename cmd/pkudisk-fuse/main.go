@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,38 +13,254 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/hanwen/go-fuse/v2/fs"
-	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/spf13/cobra"
 	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/auth"
 	"pkudisk-fuse/internal/vfs"
 )
 
 var version = "dev"
 
+type usageError struct {
+	cause   error
+	command string
+}
+
+func (e *usageError) Error() string {
+	return fmt.Sprintf("%v\nRun '%s --help' for usage and examples.", e.cause, e.command)
+}
+func (e *usageError) Unwrap() error { return e.cause }
+func usageFailure(cmd *cobra.Command, text string) error {
+	return &usageError{errors.New(text), cmd.CommandPath()}
+}
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var usage *usageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	return 1
+}
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := execute(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "pkudisk-fuse:", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
-func usage() {
-	fmt.Fprintln(os.Stderr, `Usage:
-  pkudisk-fuse mount [options] MOUNTPOINT
-  pkudisk-fuse root [authentication options] [--json]
-  pkudisk-fuse ls [authentication options] [--json] [PATH-OR-GNS-ID]
-  pkudisk-fuse tui [authentication options]
-  pkudisk-fuse account [list|add|default|remove] [options]
-  pkudisk-fuse upload [authentication options] LOCAL-PATH REMOTE-PATH
-  pkudisk-fuse download [authentication options] REMOTE-PATH [LOCAL-PATH]
-  pkudisk-fuse recover [--cache-dir PATH] [--json]
-  pkudisk-fuse version
+func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
+	root := newRootCommand(in, out, errOut)
+	started := false
+	root.PersistentPreRun = func(*cobra.Command, []string) { started = true }
+	root.SetArgs(args)
+	cmd, err := root.ExecuteContextC(ctx)
+	if err != nil && !started {
+		var usage *usageError
+		if !errors.As(err, &usage) {
+			if cmd == nil {
+				cmd = root
+			}
+			return &usageError{err, cmd.CommandPath()}
+		}
+	}
+	return err
+}
 
-Commands reuse the default saved account. Use --account NAME to select one,
-or --username and a hidden password prompt, --password-file,
---password-stdin, or --credentials-file for a login.
---root '/LIBRARY/FOLDER' or --root 'gns://...' selects a library/folder;
-omitting it mounts all accessible libraries. Run a command with --help for options.`)
+const authHelp = `Account selection:
+  Uses the saved default account. --account NAME selects another saved account.
+  Explicit credentials start a new login. Successful logins are saved unless
+  --no-save is set; the first saved account becomes the default.
+  --non-interactive fails instead of prompting for credentials or verification.
+  Run "pkudisk-fuse account add --help" for credential-file formats.
+
+Output:
+  Results go to stdout. Account announcements, errors, and transfer progress go
+  to stderr. Exit codes: 0 success, 1 execution failure, 2 invalid command/flags.`
+const remoteHelp = `Remote paths:
+  Use "/Library/folder" paths, quoting spaces, or gns:// IDs returned by ls.
+  Only accessible libraries are accepted. Run "pkudisk-fuse root" to find names.`
+
+func newRootCommand(in io.Reader, out, errOut io.Writer) *cobra.Command {
+	root := &cobra.Command{
+		Use: "pkudisk-fuse", Short: "Browse, transfer, and mount PKU NetDisk files",
+		Long: `Browse PKU NetDisk, transfer files, or mount it as a Linux filesystem.
+
+Start with "account add" to save a PKU campus login, then "root" to list
+accessible document libraries. "ls" lists remote folders; "tui" opens a file
+browser. "recover" inspects local writes retained after an interrupted mount.
+
+Run "pkudisk-fuse help COMMAND" or "COMMAND --help" for usage and examples.
+Flags may appear before or after arguments. Use -- before a file name that
+starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
+		Example:      "  pkudisk-fuse account add\n  pkudisk-fuse root\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse tui",
+		SilenceUsage: true, SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return usageFailure(cmd, "unknown command "+args[0])
+			}
+			return cmd.Help()
+		},
+	}
+	root.SetIn(in)
+	root.SetOut(out)
+	root.SetErr(errOut)
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err, cmd.CommandPath()} })
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.SetHelpCommand(&cobra.Command{
+		Use: "help [COMMAND...]", Short: "Explain a command, its arguments, and examples",
+		Long:    "Show help without opening credentials or connecting to PKU NetDisk.\nSpecify nested commands, such as 'help account add'.",
+		Example: "  pkudisk-fuse help recover\n  pkudisk-fuse help account add",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := cmd.Root()
+			for _, name := range args {
+				var next *cobra.Command
+				for _, child := range target.Commands() {
+					if child.Name() == name {
+						next = child
+						break
+					}
+				}
+				if next == nil {
+					return usageFailure(cmd, "unknown help topic "+name)
+				}
+				target = next
+			}
+			target.InitDefaultHelpFlag()
+			return target.Help()
+		},
+	})
+	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand())
+	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", version) }})
+	for _, name := range []string{"root", "ls", "upload", "download", "mount", "tui"} {
+		root.AddCommand(newRemoteCommand(name))
+	}
+	return root
+}
+
+func newRemoteCommand(name string) *cobra.Command {
+	var credentials authFlags
+	var output string
+	var overwrite, jsonOutput bool
+	timeout := 10 * time.Minute
+	var mount mountOptions
+	cmd := &cobra.Command{Use: name, Args: cobra.NoArgs}
+	switch name {
+	case "root":
+		cmd.Short = "List remote document libraries accessible to this account"
+		cmd.Long = "List the document libraries that form the remote root.\nEach row includes its name, type, and gns:// ID. 'ls' without a path lists the same libraries."
+		cmd.Example = "  pkudisk-fuse root\n  pkudisk-fuse root --account work --json"
+	case "ls":
+		cmd.Use = "ls [REMOTE-DIRECTORY]"
+		cmd.Args = cobra.MaximumNArgs(1)
+		cmd.Short = "List a remote directory or the accessible libraries"
+		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list libraries. A file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
+		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
+	case "upload":
+		cmd.Use = "upload LOCAL-FILE [REMOTE-DESTINATION]"
+		cmd.Args = cobra.RangeArgs(1, 2)
+		cmd.Short = "Upload a local file to a remote file path or folder"
+		cmd.Long = "Upload one regular local file without mounting. A folder destination uses\nthe local file name; a file destination can rename it. The destination parent\nmust already exist. Directory trees are not uploaded recursively.\n\nExisting files require --overwrite. A concurrent remote revision change\nreturns an error. Completion is reported after the upload is published.\n\n" + remoteHelp
+		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./report.pdf '/My library/Reports/final.pdf' --overwrite\n  pkudisk-fuse upload ./report.pdf --remote '/My library/Reports/'"
+		cmd.Flags().StringVar(&output, "remote", "", "remote destination instead of a second positional argument")
+		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing remote file after checking its revision")
+	case "download":
+		cmd.Use = "download REMOTE-FILE [LOCAL-DESTINATION]"
+		cmd.Args = cobra.RangeArgs(1, 2)
+		cmd.Short = "Download a remote file to a local file path or directory"
+		cmd.Long = "Download one remote file without mounting. A local directory destination\nuses the remote file name. Omit the local destination to save that name in the\ncurrent directory, including when selecting a file by gns:// ID. Folder trees\nare not downloaded recursively.\n\nExisting local files require --overwrite. Content is size-checked and written\nto a temporary file, then installed atomically. Failed or cancelled transfers\nleave the existing destination intact.\n\n" + remoteHelp
+		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf'\n  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/report.pdf' ./copy.pdf --overwrite"
+		cmd.Flags().StringVarP(&output, "output", "o", "", "local destination instead of a second positional argument")
+		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace an existing local destination")
+	case "tui":
+		cmd.Short = "Open an interactive remote file browser"
+		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads, d downloads, r refreshes, ? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
+		cmd.Example = "  pkudisk-fuse tui\n  pkudisk-fuse tui --account work --io-timeout 30m"
+	case "mount":
+		cmd.Use = "mount MOUNTPOINT"
+		cmd.Args = cobra.ExactArgs(1)
+		cmd.Short = "Mount remote libraries or a selected folder as a Linux filesystem"
+		cmd.Long = "Mount PKU NetDisk in an existing empty local directory. The process stays\nin the foreground; Ctrl-C unmounts. Linux FUSE and fusermount3/fusermount are\nrequired. Omit --root to expose all accessible libraries.\n\nWrites use a private local cache and are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
+		cmd.Example = "  mkdir -p ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk --account work --read-only\n  pkudisk-fuse mount ~/PKUNetDisk --root '/My library/Reports'"
+		f := cmd.Flags()
+		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
+		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
+		f.Int64Var(&mount.cacheLimit, "cache-limit", 10<<30, "maximum cached bytes; 0 disables the limit")
+		f.Int64Var(&mount.partSize, "part-size", 16<<20, "upload part size in bytes, at least 5242880 (5 MiB)")
+		f.DurationVar(&mount.ttl, "cache-ttl", 2*time.Second, "directory and attribute cache lifetime")
+		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")
+		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")
+		f.BoolVar(&mount.debug, "debug", false, "print FUSE protocol diagnostics to stderr")
+	}
+	credentials.add(cmd.Flags())
+	if name == "root" || name == "ls" {
+		cmd.Flags().BoolVar(&jsonOutput, "json", false, "write an array of entries as JSON to stdout")
+	}
+	if name == "upload" || name == "download" || name == "tui" || name == "mount" {
+		cmd.Flags().DurationVar(&timeout, "io-timeout", timeout, "timeout per file operation; accepts 30s, 10m, 1h")
+	}
+	cmd.Long += "\n\n" + authHelp
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := credentials.validate(); err != nil {
+			return usageFailure(cmd, err.Error())
+		}
+		if (name == "upload" || name == "download") && len(args) == 2 && cmd.Flags().Changed(map[string]string{"upload": "remote", "download": "output"}[name]) {
+			return usageFailure(cmd, "choose a destination argument or its flag, not both")
+		}
+		if name == "upload" && len(args) == 1 && output == "" {
+			return usageFailure(cmd, "remote destination required: provide REMOTE-DESTINATION or --remote")
+		}
+		if timeout <= 0 {
+			return usageFailure(cmd, "--io-timeout must be positive")
+		}
+		if name == "mount" && (mount.cacheLimit < 0 || mount.partSize < 5<<20 || mount.ttl < 0 || mount.refreshInterval < 0) {
+			return usageFailure(cmd, "cache limits and intervals must be nonnegative; --part-size must be at least 5242880 bytes")
+		}
+		if name == "tui" && !interactiveIO(cmd.InOrStdin(), cmd.OutOrStdout()) {
+			return errors.New("tui requires an interactive terminal; use ls, upload, or download for non-interactive operations")
+		}
+		credentials.input, credentials.output = cmd.InOrStdin(), cmd.ErrOrStderr()
+		credentials.announce = name != "tui"
+		session, server, account, err := authenticate(cmd.Context(), credentials)
+		if err != nil {
+			return err
+		}
+		defer session.Close()
+		client, err := anyshare.New(server, session)
+		if err != nil {
+			return err
+		}
+		switch name {
+		case "root", "ls":
+			selector := "/"
+			if len(args) == 1 {
+				selector = args[0]
+			}
+			entries, err := listRemote(cmd.Context(), client, selector)
+			if err != nil {
+				return err
+			}
+			return printEntries(cmd.OutOrStdout(), entries, jsonOutput)
+		case "upload", "download":
+			destination := output
+			if len(args) == 2 {
+				destination = args[1]
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			return runTransfer(ctx, client, name, args[0], destination, overwrite, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		case "tui":
+			return runTUI(cmd.Context(), client, account, server, timeout, cmd.InOrStdin(), cmd.OutOrStdout())
+		case "mount":
+			mount.mountpoint = args[0]
+			mount.timeout = timeout
+			return mountFileSystem(cmd.Context(), client, session, mount, cmd.ErrOrStderr())
+		}
+		return nil
+	}
+	return cmd
 }
 
 func defaultCache() string {
@@ -54,258 +270,29 @@ func defaultCache() string {
 	}
 	return filepath.Join(dir, "pkudisk-fuse")
 }
-func run(args []string) error {
-	if len(args) == 0 {
-		usage()
-		return errors.New("a command is required")
+func listRemote(ctx context.Context, client *anyshare.Client, selector string) ([]anyshare.Entry, error) {
+	if selector == "/" || selector == "" {
+		return client.Roots(ctx)
 	}
-	switch args[0] {
-	case "version":
-		fmt.Println("pkudisk-fuse", version)
-		return nil
-	case "help", "--help", "-h":
-		usage()
-		return nil
-	case "recover":
-		return recovery(args[1:])
-	case "account":
-		return accountCommand(args[1:])
-	case "mount", "root", "ls", "tui", "upload", "download":
-	default:
-		usage()
-		return errors.New("unknown command")
-	}
-	command := args[0]
-	set := flag.NewFlagSet(command, flag.ContinueOnError)
-	var credentials authFlags
-	credentials.add(set)
-	var root, cache, output string
-	var readOnly, debug, jsonOutput, overwrite bool
-	var cacheLimit, partSize int64
-	var ttl, timeout, refreshInterval time.Duration
-	if command == "mount" {
-		set.StringVar(&root, "root", "", "mount only this library/folder path or gns:// ID")
-		set.StringVar(&cache, "cache-dir", defaultCache(), "private local write-cache directory (0700)")
-		set.Int64Var(&cacheLimit, "cache-limit", 10<<30, "maximum total write-cache bytes; 0 means unlimited")
-		set.Int64Var(&partSize, "part-size", 16<<20, "multipart upload chunk bytes (minimum 5 MiB)")
-		set.DurationVar(&ttl, "cache-ttl", 2*time.Second, "directory and kernel attribute cache lifetime")
-		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "download/upload timeout per file operation")
-		set.DurationVar(&refreshInterval, "refresh-interval", time.Hour, "renew idle authentication sessions at this interval; 0 uses refresh on HTTP 401 only")
-		set.BoolVar(&readOnly, "read-only", false, "mount read-only")
-		set.BoolVar(&debug, "debug", false, "enable FUSE protocol diagnostics")
-	} else if command == "root" || command == "ls" {
-		set.BoolVar(&jsonOutput, "json", false, "output entries as JSON")
-	} else if command == "tui" {
-		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "upload/download timeout")
-	} else if command == "upload" {
-		set.StringVar(&output, "remote", "", "remote destination path (also accepted as the second argument)")
-		set.BoolVar(&overwrite, "overwrite", false, "replace an existing remote file")
-		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "upload timeout")
-	} else {
-		set.StringVar(&output, "output", "", "local output file (defaults to the remote file name)")
-		set.BoolVar(&overwrite, "overwrite", false, "replace an existing local file")
-		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "download timeout")
-	}
-	if err := set.Parse(args[1:]); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return err
-	}
-	if command == "mount" && set.NArg() != 1 {
-		return errors.New("mount requires one mountpoint; place options before it")
-	}
-	if command == "ls" && set.NArg() > 1 {
-		return errors.New("ls accepts at most one library/folder path or gns:// ID")
-	}
-	if command == "root" && set.NArg() != 0 {
-		return errors.New("root takes no positional arguments")
-	}
-	if command == "tui" && set.NArg() != 0 {
-		return errors.New("tui takes no positional arguments")
-	}
-	if command == "upload" && (set.NArg() < 1 || set.NArg() > 2) {
-		return errors.New("upload requires LOCAL-PATH and REMOTE-PATH (or --remote REMOTE-PATH)")
-	}
-	if command == "upload" && output != "" && set.NArg() == 2 {
-		return errors.New("upload accepts the remote destination either as the second argument or with --remote, not both")
-	}
-	if command == "download" && (set.NArg() < 1 || set.NArg() > 2) {
-		return errors.New("download requires REMOTE-PATH and optional LOCAL-PATH")
-	}
-	if command == "download" && output != "" && set.NArg() == 2 {
-		return errors.New("download accepts the local destination either as the second argument or with --output, not both")
-	}
-	if command == "mount" && (cacheLimit < 0 || partSize < 5<<20 || ttl < 0 || timeout <= 0 || refreshInterval < 0) {
-		return errors.New("invalid cache, part-size, or timeout option")
-	}
-	if (command == "upload" || command == "download" || command == "tui") && timeout <= 0 {
-		return errors.New("invalid I/O timeout")
-	}
-	ctx := context.Background()
-	credentials.announce = command != "tui"
-	session, serverURL, _, err := authenticate(ctx, credentials)
+	entry, err := client.Resolve(ctx, selector)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer session.Close()
-	client, err := anyshare.New(serverURL, session)
-	if err != nil {
-		return err
+	if !entry.Dir {
+		return nil, fmt.Errorf("%q is a file; ls requires a directory (use download to retrieve it)", selector)
 	}
-	if command == "root" {
-		entries, err := client.Roots(ctx)
-		if err != nil {
-			return err
-		}
-		return printEntries(entries, jsonOutput)
-	}
-	if command == "upload" {
-		local := set.Arg(0)
-		remote := output
-		if remote == "" && set.NArg() == 2 {
-			remote = set.Arg(1)
-		}
-		if remote == "" {
-			return errors.New("upload requires a remote destination path")
-		}
-		transferCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		return uploadFile(transferCtx, client, local, remote, overwrite)
-	}
-	if command == "download" {
-		remote := set.Arg(0)
-		local := output
-		if local == "" && set.NArg() == 2 {
-			local = set.Arg(1)
-		}
-		transferCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		return downloadFile(transferCtx, client, remote, local, overwrite)
-	}
-	if command == "tui" {
-		return runTUI(ctx, client, timeout)
-	}
-	if command == "ls" {
-		var entries []anyshare.Entry
-		selector := "/"
-		if set.NArg() == 1 {
-			selector = set.Arg(0)
-		}
-		if selector == "/" {
-			entries, err = client.Roots(ctx)
-		} else {
-			var e anyshare.Entry
-			e, err = client.Resolve(ctx, selector)
-			if err == nil {
-				if !e.Dir {
-					return syscall.ENOTDIR
-				}
-				entries, err = client.List(ctx, e.ID)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		return printEntries(entries, jsonOutput)
-	}
-	client.PartSize = partSize
-	var selected *anyshare.Entry
-	if root != "" && root != "/" {
-		entry, err := client.Resolve(ctx, root)
-		if err != nil {
-			return fmt.Errorf("select mount root: %w", err)
-		}
-		if !entry.Dir {
-			return syscall.ENOTDIR
-		}
-		selected = &entry
-	} else {
-		if _, err := client.Roots(ctx); err != nil {
-			return err
-		}
-	}
-	point, err := filepath.Abs(set.Arg(0))
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(point)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return syscall.ENOTDIR
-	}
-	contents, err := os.ReadDir(point)
-	if err != nil {
-		return err
-	}
-	if len(contents) != 0 {
-		return errors.New("mountpoint must be an empty directory")
-	}
-	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, TTL: ttl, IOTimeout: timeout})
-	if err != nil {
-		return err
-	}
-	options := &fs.Options{MountOptions: fuse.MountOptions{Name: "pkudisk-fuse", FsName: "PKU NetDisk", Debug: debug, DisableXAttrs: true, MaxWrite: 1 << 20}, EntryTimeout: &ttl, AttrTimeout: &ttl, NegativeTimeout: new(time.Duration)}
-	if readOnly {
-		options.MountOptions.Options = []string{"ro"}
-	}
-	server, err := fs.Mount(point, filesystem.Root(), options)
-	if err != nil {
-		filesystem.Close()
-		return fmt.Errorf("FUSE mount: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "Mounted PKU NetDisk at %s; write cache %s. Ctrl-C unmounts.\n", point, filesystem.CachePath())
-	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
-	maintenanceDone := make(chan struct{})
-	maintenanceFailed := make(chan error, 1)
-	go func() {
-		defer close(maintenanceDone)
-		session.KeepAlive(maintenanceCtx, refreshInterval, func(err error) {
-			if err == nil {
-				fmt.Fprintln(os.Stderr, "Authentication session renewed.")
-			} else if errors.Is(err, auth.ErrSessionExpired) {
-				maintenanceFailed <- err
-			} else {
-				fmt.Fprintf(os.Stderr, "Session renewal will retry: %v\n", err)
-			}
-		})
-	}()
-	defer func() { cancelMaintenance(); <-maintenanceDone }()
-	done := make(chan struct{})
-	go func() { server.Wait(); close(done) }()
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	for {
-		select {
-		case <-done:
-			return filesystem.Close()
-		case err := <-maintenanceFailed:
-			if unmountErr := server.Unmount(); unmountErr != nil {
-				return fmt.Errorf("%w; unmount failed: %w", err, unmountErr)
-			}
-			<-done
-			return errors.Join(err, filesystem.Close())
-		case <-signals:
-			if err := server.Unmount(); err != nil {
-				fmt.Fprintln(os.Stderr, "Unmount failed:", err)
-				continue
-			}
-			<-done
-			return filesystem.Close()
-		}
-	}
+	return client.List(ctx, entry.ID)
 }
-
-func printEntries(entries []anyshare.Entry, asJSON bool) error {
+func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error {
+	if entries == nil {
+		entries = []anyshare.Entry{}
+	}
 	if asJSON {
-		e := json.NewEncoder(os.Stdout)
+		e := json.NewEncoder(output)
 		e.SetIndent("", "  ")
 		return e.Encode(entries)
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tBYTES\tID")
 	for _, e := range entries {
 		typ := e.Type
@@ -320,29 +307,77 @@ func printEntries(entries []anyshare.Entry, asJSON bool) error {
 	}
 	return w.Flush()
 }
+func newRecoverCommand() *cobra.Command {
+	var cache string
+	var jsonOutput bool
+	cmd := &cobra.Command{Use: "recover", Short: "Inspect uncommitted local writes retained in the mount cache", Args: cobra.NoArgs,
+		Long: `Find local cached file contents that have not been committed to PKU NetDisk.
+This is useful after an upload failed, a write conflicted, or a mount ended
+unexpectedly. Scans --cache-dir and its mount subdirectories.
 
-func recovery(args []string) error {
-	set := flag.NewFlagSet("recover", flag.ContinueOnError)
-	cache := set.String("cache-dir", defaultCache(), "private write-cache directory")
-	asJSON := set.Bool("json", false, "output recovery records as JSON")
-	if err := set.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+This command lists retained files; it does not upload, delete, or restore them.
+It requires no account or network connection. Stop the affected mount before
+copying retained contents, as an active mount may still be writing them.
+
+Each record shows a local data path, recorded remote name/ID, size, revision,
+and update time. Copy needed files to a permanent local directory, then use
+upload to save them to a chosen remote destination. Prefer a new file name
+when resolving a remote revision conflict. Remove old cache files only after
+checking that your copies or uploads contain the expected data.
+
+Output: human-readable records, or a JSON array with --json. Empty results are
+reported explicitly; JSON uses []. Exit codes: 0 success, 1 scan failure,
+2 invalid arguments.`,
+		Example: "  pkudisk-fuse recover\n  pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse --json\n  cp /cache/mount-EXAMPLE/data-EXAMPLE ~/recovered-report.pdf\n  pkudisk-fuse upload ~/recovered-report.pdf '/My library/recovered-report.pdf'",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			records, err := vfs.RecoveryFiles(cache)
+			if err != nil {
+				// A missing cache parent is an empty result. A file disappearing
+				// inside an existing cache is a scan failure, not a clean cache.
+				if _, statErr := os.Stat(cache); !errors.Is(statErr, os.ErrNotExist) {
+					return fmt.Errorf("scan cache %q: %w", cache, err)
+				}
+			}
+			if records == nil {
+				records = []vfs.RecoveryRecord{}
+			}
+			if jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(records)
+			}
+			if len(records) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "No uncommitted cached writes found in %s.\n", cache)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Found %d uncommitted cached file(s) in %s:\n", len(records), cache)
+			for _, r := range records {
+				fmt.Fprintf(cmd.OutOrStdout(), "\nLocal file: %s\nRemote:     %s (%s)\nSize:       %d bytes\nRevision:   %s\nUpdated:    %s\n", r.Data, r.Entry.Name, r.Entry.ID, r.Entry.Size, r.Entry.Rev, r.Updated.Format(time.RFC3339))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "\nStop the affected mount, copy needed local files, then upload to your chosen destination.\nFor a recovery example, run 'pkudisk-fuse recover --help'.")
 			return nil
-		}
-		return err
+		},
 	}
-	entries, err := vfs.RecoveryFiles(*cache)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	cmd.Flags().StringVar(&cache, "cache-dir", defaultCache(), "mount cache parent or a specific mount cache directory to scan")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output recovery records as a JSON array, including [] when empty")
+	return cmd
+}
+func newCompletionCommand() *cobra.Command {
+	return &cobra.Command{Use: "completion SHELL", Short: "Generate shell completion for bash, zsh, fish, or powershell", Args: cobra.ExactArgs(1),
+		Long:      "Print a shell completion script to stdout. Source the script in your shell\nor install it in your shell's completion directory. No login is required.",
+		Example:   "  source <(pkudisk-fuse completion bash)\n  pkudisk-fuse completion zsh > ~/.zsh/completions/_pkudisk-fuse\n  pkudisk-fuse completion fish > ~/.config/fish/completions/pkudisk-fuse.fish",
+		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletionV2(cmd.OutOrStdout(), true)
+			case "zsh":
+				return cmd.Root().GenZshCompletion(cmd.OutOrStdout())
+			case "fish":
+				return cmd.Root().GenFishCompletion(cmd.OutOrStdout(), true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletionWithDesc(cmd.OutOrStdout())
+			default:
+				return usageFailure(cmd, "supported shells: bash, zsh, fish, powershell")
+			}
+		},
 	}
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(entries)
-	}
-	for _, e := range entries {
-		fmt.Printf("%s\n  remote: %s\n  revision: %s\n", e.Data, e.Entry.ID, e.Entry.Rev)
-	}
-	return nil
 }

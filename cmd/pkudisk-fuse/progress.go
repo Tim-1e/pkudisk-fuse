@@ -5,121 +5,68 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/term"
+	"pkudisk-fuse/internal/transfer"
 )
 
-type transferProgress struct {
-	label   string
-	total   int64
-	done    int64
-	output  io.Writer
-	enabled bool
-	mu      sync.Mutex
-	last    time.Time
-	ended   bool
+type cliProgress struct {
+	label  string
+	output io.Writer
+	bar    *progressbar.ProgressBar
 }
 
-func newTransferProgress(label string, total int64) *transferProgress {
-	p := &transferProgress{label: label, total: max(total, 0), output: os.Stderr, enabled: term.IsTerminal(int(os.Stderr.Fd()))}
-	if p.enabled {
-		p.last = time.Now()
-		p.renderLocked(false, false)
-	}
-	return p
+func newCLIProgress(direction string, output io.Writer) *cliProgress {
+	return &cliProgress{label: strings.ToUpper(direction[:1]) + direction[1:], output: output}
 }
-
-func (p *transferProgress) add(n int) {
-	if n <= 0 {
+func (p *cliProgress) Update(state transfer.Progress) {
+	file, ok := p.output.(*os.File)
+	if !ok || !term.IsTerminal(int(file.Fd())) {
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ended {
-		return
+	if p.bar == nil {
+		// Reserve the last step for publication/file installation. This keeps
+		// the displayed percentage below 100% until the operation succeeds.
+		p.bar = progressbar.NewOptions64(state.Total+1,
+			progressbar.OptionSetWriter(p.output), progressbar.OptionSetWidth(24),
+			progressbar.OptionShowBytes(true), progressbar.OptionShowTotalBytes(false),
+			progressbar.OptionUseIECUnits(true), progressbar.OptionSetPredictTime(true),
+			progressbar.OptionThrottle(100*time.Millisecond), progressbar.OptionUseANSICodes(true),
+			progressbar.OptionOnCompletion(func() { fmt.Fprint(p.output, "\r\n") }),
+		)
 	}
-	p.done += min(int64(n), p.total-p.done)
-	if !p.enabled || (p.done < p.total && time.Since(p.last) < 100*time.Millisecond) {
-		return
+	phase := ""
+	if state.Phase == transfer.Finalizing {
+		phase = " finishing..."
 	}
-	p.last = time.Now()
-	p.renderLocked(false, false)
-}
-
-// The transfer is complete only after the remote upload is published or the
-// verified download has been installed at its destination. Keep the bar below
-// 100% while these final steps are pending.
-func (p *transferProgress) finish(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ended {
-		return
-	}
-	p.ended = true
-	if err == nil {
-		p.done = p.total
-	}
-	if p.enabled {
-		p.renderLocked(true, err != nil)
-		fmt.Fprint(p.output, "\r\n")
+	p.bar.Describe(fmt.Sprintf("%s %s/%s%s", p.label, transferBytes(state.Done), transferBytes(state.Total), phase))
+	if state.Phase == transfer.Complete {
+		_ = p.bar.Finish()
+	} else {
+		_ = p.bar.Set64(state.Done)
 	}
 }
-
-func (p *transferProgress) renderLocked(final, failed bool) {
-	percent := 0
-	if p.total > 0 {
-		percent = min(int(float64(p.done)/float64(p.total)*100), 99)
+func (p *cliProgress) Finish(err error) {
+	if p.bar == nil {
+		return
 	}
-	suffix := ""
-	if final {
-		if failed {
-			suffix = " failed"
-		} else {
-			percent = 100
-		}
-	} else if p.done == p.total && p.total > 0 {
-		suffix = " finishing..."
+	if err != nil {
+		p.bar.Describe(p.label + " failed")
+		_ = p.bar.Exit()
 	}
-	const width = 24
-	filled := width * percent / 100
-	fmt.Fprintf(p.output, "\r%s [%s%s] %3d%% %s/%s%s\x1b[K", p.label, strings.Repeat("#", filled), strings.Repeat(" ", width-filled), percent, transferBytes(p.done), transferBytes(p.total), suffix)
 }
-
 func transferBytes(n int64) string {
 	if n < 1024 {
 		return fmt.Sprintf("%d B", n)
 	}
-	units := []string{"KiB", "MiB", "GiB", "TiB"}
 	value := float64(n)
-	for _, unit := range units {
+	for _, unit := range []string{"KiB", "MiB", "GiB", "TiB"} {
 		value /= 1024
-		if value < 1024 || unit == units[len(units)-1] {
+		if value < 1024 || unit == "TiB" {
 			return fmt.Sprintf("%.1f %s", value, unit)
 		}
 	}
 	return fmt.Sprintf("%d B", n)
-}
-
-type progressReaderAt struct {
-	reader   io.ReaderAt
-	progress *transferProgress
-}
-
-func (r progressReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	n, err := r.reader.ReadAt(p, off)
-	r.progress.add(n)
-	return n, err
-}
-
-type progressWriter struct {
-	writer   io.Writer
-	progress *transferProgress
-}
-
-func (w progressWriter) Write(p []byte) (int, error) {
-	n, err := w.writer.Write(p)
-	w.progress.add(n)
-	return n, err
 }

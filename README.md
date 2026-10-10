@@ -6,7 +6,7 @@ The login uses **PKU unified authentication (IAAA)**. The password is RSA encryp
 
 ## Build
 
-Go 1.24 or newer is required and must be available as `go` on `PATH`.
+Go 1.26 or newer is required and must be available as `go` on `PATH`.
 
 ```sh
 make build
@@ -15,6 +15,26 @@ make check
 ```
 
 The binary is `bin/pkudisk-fuse`. No part of the repository contains an account, password, token, cookie, or private key.
+
+## Built-in help
+
+The CLI uses Cobra. Every command includes its purpose, argument meanings, defaults, behavior, and examples in its help. Flags can appear before or after arguments. Use `--` before a file name beginning with a dash.
+
+```sh
+bin/pkudisk-fuse --help
+bin/pkudisk-fuse help recover
+bin/pkudisk-fuse help account add
+bin/pkudisk-fuse download --help
+```
+
+Help and shell completion work without a saved account or network connection. Completion scripts are available for Bash, Zsh, Fish, and PowerShell:
+
+```sh
+source <(bin/pkudisk-fuse completion bash)
+bin/pkudisk-fuse completion zsh > ~/.zsh/completions/_pkudisk-fuse
+```
+
+Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `root`, `ls`, `account list`, and `recover`, including `[]` for empty results.
 
 ## Authentication
 
@@ -34,7 +54,7 @@ bin/pkudisk-fuse mount --username YOUR-CAMPUS-ID \
   --password-file ~/.config/pkudisk-fuse/password ~/mnt/pkudisk
 ```
 
-`--password-stdin` is also available. A JSON credential file can be supplied with `--credentials-file`; it must be an owner-only `0600` file. The first successful login is saved under the campus username and becomes the default account. Use `--no-save` for a one-off login.
+`--password-stdin` is also available. A JSON credential file can be supplied with `--credentials-file`; it must be an owner-only `0600` file. Run `account add --help` for its format. The first successful login is saved under the campus username and becomes the default account. Use `--no-save` for a one-off login and `--non-interactive` to fail instead of prompting when credentials or required verification are missing.
 
 Use `account` to add a login or manage saved accounts:
 
@@ -51,7 +71,7 @@ bin/pkudisk-fuse account remove work
 
 If IAAA requires a CAPTCHA or OTP/SMS verification, the driver prints a prompt. CAPTCHA images are written to a temporary file for the user to inspect and are removed after the answer is entered.
 
-An EOF while establishing an authentication connection is retried up to two times. These additional retries stop once a connection has been acquired, so submitted login requests are not replayed. Transport errors identify the server and endpoint without including query parameters or credentials.
+Transient authentication and read-only API transport failures are retried a bounded number of times. Submitted password-login requests are not replayed. Refresh-token rotation is serialized across processes using the same account store. Transport errors identify the server and endpoint without including query parameters or credentials.
 
 ## Choosing the mounted root
 
@@ -63,11 +83,13 @@ bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-
 bin/pkudisk-fuse ls '/My library/Reports'
 ```
 
-`tui` opens an interactive terminal browser using the selected account. Use `j`/`k` or the arrow keys to move, Enter to open a folder, Backspace to go up, `u` to upload a local file into the current folder, `d` to download the selected file, `r` to refresh, and `q` to quit:
+`tui` opens a Bubble Tea terminal browser showing the selected account and remote path. The remote list scrolls, paginates, and supports fuzzy filtering with `/`. Use `j`/`k` or the arrows to move, Enter to open a folder, Backspace to go up, `u` to pick a local file to upload, `d` to edit the selected file's download destination, `r` to refresh, and `?` for keyboard help. The upload picker also accepts `p` to type a local path. `~` is expanded in local path inputs.
 
 ```sh
 bin/pkudisk-fuse tui
 ```
+
+Directory reads and transfers run asynchronously so the screen remains responsive. The TUI adapts to terminal resizing and shows transfer progress and speed. Esc cancels an active transfer or dialog; `q` quits, cancelling an active operation first. Existing files require an explicit overwrite choice. Bubble Tea manages terminal input and restoration on exit.
 
 Upload and download without mounting the filesystem. Remote paths are library-relative (`/Library/folder/file`) or an allowed `gns://...` ID:
 
@@ -76,7 +98,9 @@ bin/pkudisk-fuse upload ./report.pdf '/My library/Reports/report.pdf'
 bin/pkudisk-fuse download --overwrite '/My library/Reports/report.pdf' ./report.pdf
 ```
 
-Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a progress bar with the percentage and transferred/total bytes. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is written to standard error and disabled when redirected; `--io-timeout` controls each standalone transfer.
+Transfers handle one file at a time, not directory trees. A remote folder destination uses the local source name; a local directory destination uses the remote file name. Omitting a download destination saves that name in the current directory, including for a `gns://` selector.
+
+Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a maintained progress bar with percentage, transferred/total bytes, speed, and ETA. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is disabled when redirected; `--io-timeout` controls each file operation. Ctrl-C cancels CLI transfers; cancelled downloads preserve an existing destination and remove the temporary file.
 
 The `--root` option accepts either the displayed path or an AnyShare `gns://...` object ID. A folder can therefore be mounted directly:
 
@@ -115,10 +139,12 @@ Writes are held in a private `0700` cache and published on `fsync`/close. A fail
 bin/pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse
 ```
 
+`recover` lists retained local contents and their recorded remote names/IDs, sizes, revisions, and update times. It runs offline and does not upload, delete, or automatically restore anything. Stop the affected mount, copy needed cached files to a permanent location, then use `upload` with a chosen destination. `recover --help` includes a complete example; `recover --json` returns `[]` when no records exist.
+
 Set `--read-only` when a mount must not issue any mutating API request. The default cache limit is 10 GiB and can be changed with `--cache-limit`; `--part-size` controls multipart upload chunks (minimum 5 MiB).
 
 Unmount with `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`). The process also handles Ctrl-C and SIGTERM.
 
 ## Implementation notes
 
-The installed desktop client was inspected from `/opt/pku-netdisk/current/resources/app.asar`. The relevant API calls are documented in [docs/anyshare-protocol.md](docs/anyshare-protocol.md). Authentication, remote object-storage URLs, path selectors, and recovery metadata are validated before use; signed object-storage URLs are never included in errors or logs.
+The installed desktop client was inspected from `/opt/pku-netdisk/current/resources/app.asar`. The relevant API calls are documented in [docs/anyshare-protocol.md](docs/anyshare-protocol.md). Cobra handles command parsing and help; Bubble Tea, Bubbles, and Lip Gloss provide the terminal UI; progressbar renders CLI transfer progress. Both interfaces use the same transfer service for destination selection, streaming, revision checks, and atomic downloads. Authentication, remote object-storage URLs, path selectors, and recovery metadata are validated before use; signed object-storage URLs are never included in errors or logs.

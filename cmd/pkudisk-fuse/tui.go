@@ -1,246 +1,595 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
-	"golang.org/x/sys/unix"
+	"charm.land/bubbles/v2/filepicker"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/transfer"
 )
 
-type tui struct {
-	ctx         context.Context
-	client      *anyshare.Client
-	timeout     time.Duration
-	fd          int
-	raw         *term.State
-	current     *anyshare.Entry
-	currentPath string
-	entries     []anyshare.Entry
-	cursor      int
-	status      string
+type browserBackend interface {
+	transfer.Backend
+	Roots(context.Context) ([]anyshare.Entry, error)
+}
+type remoteItem struct{ entry anyshare.Entry }
+
+func (i remoteItem) Title() string {
+	if i.entry.Dir {
+		return "[DIR] " + tuiText(i.entry.Name)
+	}
+	return tuiText(i.entry.Name)
+}
+func (i remoteItem) Description() string {
+	if i.entry.Dir {
+		return "Folder"
+	}
+	text := transferBytes(i.entry.Size)
+	if !i.entry.Modified.IsZero() {
+		text += "  " + i.entry.Modified.Local().Format("2006-01-02 15:04")
+	}
+	return text
+}
+func (i remoteItem) FilterValue() string { return i.entry.Name }
+
+type browserLocation struct {
+	entry    *anyshare.Entry
+	path     string
+	selected string
+}
+type browserMode int
+
+const (
+	browseMode browserMode = iota
+	pickerMode
+	pathMode
+	confirmMode
+)
+
+type directoryMsg struct {
+	id       int
+	location browserLocation
+	history  []browserLocation
+	entries  []anyshare.Entry
+	err      error
+}
+type transferMsg struct {
+	id        int
+	direction string
+	result    transfer.Result
+	err       error
+}
+type progressTickMsg struct{ id int }
+type progressMeter struct {
+	mu    sync.Mutex
+	value transfer.Progress
 }
 
-func runTUI(ctx context.Context, client *anyshare.Client, timeout time.Duration) error {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdout.Fd())) {
+func (m *progressMeter) Update(p transfer.Progress) { m.mu.Lock(); m.value = p; m.mu.Unlock() }
+func (m *progressMeter) Value() transfer.Progress   { m.mu.Lock(); defer m.mu.Unlock(); return m.value }
+
+type tuiModel struct {
+	ctx                 context.Context
+	backend             browserBackend
+	service             transfer.Service
+	account, server     string
+	timeout             time.Duration
+	width, height       int
+	remote              list.Model
+	picker              filepicker.Model
+	input               textinput.Model
+	spinner             spinner.Model
+	progress            progress.Model
+	location            browserLocation
+	history             []browserLocation
+	mode                browserMode
+	inputDirection      string
+	source, destination string
+	status              string
+	statusError         bool
+	busy, quitting      bool
+	operation           int
+	cancel              context.CancelFunc
+	meter               *progressMeter
+	progressState       transfer.Progress
+	started             time.Time
+	activity            string
+	conflict            string
+}
+
+func interactiveIO(in io.Reader, out io.Writer) bool {
+	input, inOK := in.(*os.File)
+	output, outOK := out.(*os.File)
+	return inOK && outOK && term.IsTerminal(int(input.Fd())) && term.IsTerminal(int(output.Fd()))
+}
+func runTUI(ctx context.Context, backend browserBackend, account, server string, timeout time.Duration, in io.Reader, out io.Writer) error {
+	if !interactiveIO(in, out) {
 		return errors.New("tui requires an interactive terminal")
 	}
-	ui := &tui{ctx: ctx, client: client, timeout: timeout, fd: fd, currentPath: "/"}
-	if err := ui.load(); err != nil {
-		return err
+	uiCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	model := newTUIModel(uiCtx, backend, account, server, timeout)
+	_, err := tea.NewProgram(model, tea.WithContext(uiCtx), tea.WithInput(in), tea.WithOutput(out)).Run()
+	if model.cancel != nil {
+		model.cancel()
 	}
-	raw, err := term.MakeRaw(fd)
-	if err != nil {
-		return fmt.Errorf("enter raw terminal mode: %w", err)
+	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
+		return ctx.Err()
 	}
-	ui.raw = raw
-	defer func() {
-		_ = term.Restore(fd, raw)
-		fmt.Fprint(os.Stdout, "\x1b[0m\r\n")
-	}()
-	return ui.loop()
+	return err
 }
-
-func (ui *tui) load() error {
-	var entries []anyshare.Entry
-	var err error
-	if ui.current == nil {
-		entries, err = ui.client.Roots(ui.ctx)
-	} else {
-		entries, err = ui.client.List(ui.ctx, ui.current.ID)
+func newTUIModel(ctx context.Context, backend browserBackend, account, server string, timeout time.Duration) *tuiModel {
+	delegate := list.NewDefaultDelegate()
+	delegate.SetSpacing(0)
+	remote := list.New(nil, delegate, 80, 16)
+	remote.Title = "Remote files"
+	remote.SetStatusBarItemName("entry", "entries")
+	remote.DisableQuitKeybindings()
+	remote.AdditionalShortHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+			key.NewBinding(key.WithKeys("backspace"), key.WithHelp("backspace", "parent")),
+			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "download")),
+		}
 	}
-	if err != nil {
-		return err
+	remote.AdditionalFullHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open folder")),
+			key.NewBinding(key.WithKeys("backspace", "h"), key.WithHelp("backspace/h", "parent")),
+			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "download")),
+			key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+			key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "library root")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel operation")),
+			key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		}
 	}
-	ui.entries = entries
-	if ui.cursor >= len(entries) {
-		ui.cursor = len(entries) - 1
+	picker := filepicker.New()
+	cwd, err := os.Getwd()
+	if err == nil {
+		picker.CurrentDirectory = cwd
 	}
-	if ui.cursor < 0 {
-		ui.cursor = 0
+	picker.ShowHidden = true
+	picker.ShowSize = true
+	picker.ShowPermissions = false
+	picker.SetHeight(12)
+	input := textinput.New()
+	input.Prompt = "Path > "
+	input.SetWidth(70)
+	spin := spinner.New()
+	spin.Spinner = spinner.Dot
+	bar := progress.New(progress.WithDefaultBlend())
+	bar.SetWidth(45)
+	return &tuiModel{ctx: ctx, backend: backend, service: transfer.Service{Backend: backend}, account: account, server: server, timeout: timeout,
+		width: 80, height: 24, remote: remote, picker: picker, input: input, spinner: spin, progress: bar, location: browserLocation{path: "/"}}
+}
+func (m *tuiModel) Init() tea.Cmd { return m.load(m.location, nil) }
+func (m *tuiModel) load(location browserLocation, history []browserLocation) tea.Cmd {
+	if m.busy {
+		return nil
+	}
+	m.operation++
+	id := m.operation
+	ctx, cancel := context.WithTimeout(m.ctx, m.timeout)
+	m.cancel = cancel
+	m.busy = true
+	m.activity = "Loading directory"
+	m.meter = nil
+	m.status = ""
+	m.statusError = false
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		defer cancel()
+		var entries []anyshare.Entry
+		var err error
+		if location.entry == nil {
+			entries, err = m.backend.Roots(ctx)
+		} else {
+			entries, err = m.backend.List(ctx, location.entry.ID)
+		}
+		return directoryMsg{id, location, history, entries, err}
+	})
+}
+func (m *tuiModel) selected() *anyshare.Entry {
+	if item, ok := m.remote.SelectedItem().(remoteItem); ok {
+		entry := item.entry
+		return &entry
 	}
 	return nil
 }
-
-func (ui *tui) selected() *anyshare.Entry {
-	if ui.cursor < 0 || ui.cursor >= len(ui.entries) {
-		return nil
+func (m *tuiModel) currentLocation() browserLocation {
+	location := m.location
+	if entry := m.selected(); entry != nil {
+		location.selected = entry.ID
 	}
-	return &ui.entries[ui.cursor]
+	return location
 }
-
-func (ui *tui) render() {
-	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H")
-	fmt.Fprintf(os.Stdout, "PKU NetDisk  %s\r\n", tuiText(ui.currentPath))
-	fmt.Fprint(os.Stdout, "j/k or arrows: move   Enter: open   Backspace: parent   u: upload   d: download   r: refresh   q: quit\r\n\r\n")
-	if len(ui.entries) == 0 {
-		fmt.Fprint(os.Stdout, "(empty)\r\n")
-	} else {
-		for i, entry := range ui.entries {
-			marker := "  "
-			if i == ui.cursor {
-				marker = "> "
+func (m *tuiModel) startTransfer(direction, source, destination string, overwrite bool) tea.Cmd {
+	m.operation++
+	id := m.operation
+	ctx, cancel := context.WithTimeout(m.ctx, m.timeout)
+	m.cancel = cancel
+	m.busy = true
+	m.activity = strings.ToUpper(direction[:1]) + direction[1:]
+	m.source = source
+	m.destination = destination
+	m.status = ""
+	m.statusError = false
+	m.mode = browseMode
+	m.started = time.Now()
+	meter := &progressMeter{}
+	m.meter = meter
+	m.progressState = transfer.Progress{}
+	service := m.service
+	return tea.Batch(m.spinner.Tick, progressTick(id), func() tea.Msg {
+		defer cancel()
+		var result transfer.Result
+		var err error
+		if direction == "upload" {
+			result, err = service.Upload(ctx, source, destination, overwrite, meter.Update)
+		} else {
+			result, err = service.Download(ctx, source, destination, overwrite, meter.Update)
+		}
+		return transferMsg{id, direction, result, err}
+	})
+}
+func progressTick(id int) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return progressTickMsg{id} })
+}
+func (m *tuiModel) stopOperation() {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.busy = false
+}
+func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	defer m.layout()
+	switch msg := message.(type) {
+	case tea.WindowSizeMsg:
+		m.width = max(msg.Width, 20)
+		m.height = max(msg.Height, 8)
+		m.remote.SetSize(max(m.width-4, 16), max(m.height-7, 4))
+		m.picker.SetHeight(max(m.height-10, 3))
+		m.input.SetWidth(max(m.width-14, 8))
+		m.progress.SetWidth(max(min(m.width-8, 60), 12))
+	case directoryMsg:
+		if msg.id != m.operation {
+			return m, nil
+		}
+		m.stopOperation()
+		if m.quitting {
+			return m, tea.Quit
+		}
+		if msg.err != nil {
+			m.setError("Load directory", msg.err)
+			return m, nil
+		}
+		m.location = msg.location
+		m.history = msg.history
+		sort.SliceStable(msg.entries, func(i, j int) bool {
+			if msg.entries[i].Dir != msg.entries[j].Dir {
+				return msg.entries[i].Dir
 			}
-			typ := "FILE"
-			size := fmt.Sprintf("%d B", entry.Size)
-			if entry.Dir {
-				typ, size = "DIR ", ""
+			return strings.ToLower(msg.entries[i].Name) < strings.ToLower(msg.entries[j].Name)
+		})
+		items := make([]list.Item, len(msg.entries))
+		selected := 0
+		for i, entry := range msg.entries {
+			items[i] = remoteItem{entry}
+			if entry.ID == msg.location.selected {
+				selected = i
 			}
-			fmt.Fprintf(os.Stdout, "%s%-4s %-12s %s\r\n", marker, typ, size, tuiText(entry.Name))
+		}
+		m.remote.ResetFilter()
+		cmd := m.remote.SetItems(items)
+		m.remote.Select(selected)
+		if m.status == "" {
+			m.status = fmt.Sprintf("Loaded %d entries", len(items))
+		} else {
+			m.status += " • directory refreshed"
+		}
+		return m, cmd
+	case transferMsg:
+		if msg.id != m.operation {
+			return m, nil
+		}
+		m.stopOperation()
+		if m.meter != nil {
+			m.progressState = m.meter.Value()
+		}
+		if m.quitting {
+			return m, tea.Quit
+		}
+		if msg.err != nil {
+			if errors.Is(msg.err, anyshare.ErrExists) || errors.Is(msg.err, os.ErrExist) {
+				m.mode = confirmMode
+				m.inputDirection = msg.direction
+				m.conflict = msg.err.Error()
+				return m, nil
+			}
+			m.setError(m.activity, msg.err)
+			return m, nil
+		}
+		m.status = fmt.Sprintf("%s complete: %s (%s)", m.activity, tuiText(msg.result.Entry.Name), transferBytes(msg.result.Entry.Size))
+		m.statusError = false
+		if msg.direction == "upload" {
+			status := m.status
+			location := m.currentLocation()
+			location.selected = msg.result.Entry.ID
+			cmd := m.load(location, m.history)
+			m.status = status
+			return m, cmd
+		}
+		m.status += " → " + tuiText(msg.result.Local)
+		return m, nil
+	case progressTickMsg:
+		if m.busy && msg.id == m.operation && m.meter != nil {
+			m.progressState = m.meter.Value()
+			return m, progressTick(msg.id)
+		}
+	case spinner.TickMsg:
+		if m.busy {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+	case tea.KeyPressMsg:
+		k := msg.String()
+		if k == "ctrl+c" {
+			return m, m.quit()
+		}
+		if m.mode == browseMode && m.remote.SettingFilter() {
+			var cmd tea.Cmd
+			m.remote, cmd = m.remote.Update(msg)
+			return m, cmd
+		}
+		if k == "q" && m.mode != pathMode {
+			return m, m.quit()
+		}
+		if m.busy {
+			if k == "esc" {
+				if m.cancel != nil {
+					m.cancel()
+				}
+				m.status = "Cancelling…"
+			}
+			return m, nil
+		}
+		switch m.mode {
+		case pickerMode:
+			if k == "esc" {
+				m.mode = browseMode
+				return m, nil
+			}
+			if k == "p" {
+				m.inputDirection = "upload"
+				m.mode = pathMode
+				m.input.SetValue("")
+				m.input.Placeholder = "Local file path (supports ~/...)"
+				return m, m.input.Focus()
+			}
+			var cmd tea.Cmd
+			m.picker, cmd = m.picker.Update(msg)
+			if selected, file := m.picker.DidSelectFile(msg); selected {
+				return m, m.startTransfer("upload", file, m.location.entry.ID, false)
+			}
+			return m, cmd
+		case pathMode:
+			if k == "esc" {
+				m.mode = browseMode
+				m.input.Blur()
+				return m, nil
+			}
+			if k == "enter" {
+				value := strings.TrimSpace(m.input.Value())
+				if value == "" {
+					m.status = "Enter a destination or file path"
+					return m, nil
+				}
+				value = expandTUIPath(value)
+				m.input.Blur()
+				if m.inputDirection == "upload" {
+					return m, m.startTransfer("upload", value, m.location.entry.ID, false)
+				}
+				return m, m.startTransfer("download", m.source, value, false)
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		case confirmMode:
+			switch k {
+			case "y", "Y":
+				return m, m.startTransfer(m.inputDirection, m.source, m.destination, true)
+			case "n", "N", "esc", "enter":
+				m.mode = browseMode
+				m.status = "Overwrite cancelled"
+				return m, nil
+			}
+			return m, nil
+		default:
+			switch k {
+			case "enter", "l":
+				entry := m.selected()
+				if entry == nil {
+					return m, nil
+				}
+				if !entry.Dir {
+					m.status = "Press d to download the selected file"
+					return m, nil
+				}
+				current := m.currentLocation()
+				history := append(append([]browserLocation{}, m.history...), current)
+				return m, m.load(browserLocation{entry: entry, path: strings.TrimRight(m.location.path, "/") + "/" + entry.Name}, history)
+			case "backspace", "h", "left":
+				if len(m.history) == 0 {
+					m.status = "Already at the library root"
+					return m, nil
+				}
+				last := len(m.history) - 1
+				return m, m.load(m.history[last], m.history[:last])
+			case "g":
+				return m, m.load(browserLocation{path: "/"}, nil)
+			case "r":
+				return m, m.load(m.currentLocation(), m.history)
+			case "u":
+				if m.location.entry == nil {
+					m.status = "Open a library or folder before uploading"
+					return m, nil
+				}
+				m.mode = pickerMode
+				m.status = ""
+				return m, m.picker.Init()
+			case "d":
+				entry := m.selected()
+				if entry == nil {
+					return m, nil
+				}
+				if entry.Dir {
+					m.status = "Open a folder and select a file to download"
+					return m, nil
+				}
+				m.source = entry.ID
+				m.inputDirection = "download"
+				m.mode = pathMode
+				m.input.SetValue(entry.Name)
+				m.input.CursorEnd()
+				m.status = ""
+				return m, m.input.Focus()
+			}
+			var cmd tea.Cmd
+			m.remote, cmd = m.remote.Update(msg)
+			return m, cmd
 		}
 	}
-	if ui.status != "" {
-		fmt.Fprintf(os.Stdout, "\r\n%s\r\n", tuiText(ui.status))
-		ui.status = ""
+	// List filtering and picker directory reads emit their own component messages.
+	if m.mode == pickerMode {
+		var cmd tea.Cmd
+		m.picker, cmd = m.picker.Update(message)
+		return m, cmd
 	}
+	if m.mode == pathMode {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(message)
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.remote, cmd = m.remote.Update(message)
+	return m, cmd
+}
+func (m *tuiModel) quit() tea.Cmd {
+	if m.busy {
+		m.quitting = true
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.status = "Cancelling before exit…"
+		return nil
+	}
+	return tea.Quit
 }
 
+func (m *tuiModel) layout() {
+	overhead := 8
+	if m.busy {
+		overhead += 2
+		if m.meter != nil {
+			overhead += 3
+		}
+	}
+	if m.status != "" {
+		overhead += 1
+	}
+	m.remote.SetSize(max(m.width-4, 16), max(m.height-overhead, 4))
+	m.picker.SetHeight(max(m.height-12, 3))
+	m.input.SetWidth(max(m.width-14, 8))
+	m.progress.SetWidth(max(min(m.width-8, 60), 12))
+}
+func (m *tuiModel) setError(action string, err error) {
+	if errors.Is(err, context.Canceled) {
+		m.status = action + " cancelled"
+		m.statusError = false
+	} else {
+		m.status = action + ": " + tuiText(err.Error())
+		m.statusError = true
+	}
+}
+func (m *tuiModel) View() tea.View {
+	accent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	header := ansi.Truncate(accent.Render("PKU NetDisk")+"  Account: "+tuiText(m.account), m.width-4, "…") + "\n" + muted.Render(ansi.Truncate(tuiText(m.server), m.width-4, "…")) + "\n" + ansi.Truncate("Remote: "+tuiText(m.location.path), m.width-4, "…") + "\n"
+	var content string
+	switch m.mode {
+	case pickerMode:
+		content = accent.Render("Choose a local file to upload") + "\nLocal: " + tuiText(m.picker.CurrentDirectory) + "\n\n" + m.picker.View() + "\n\n↑/↓ move • Enter open/select • Backspace parent • p type path • Esc cancel"
+	case pathMode:
+		content = accent.Render("Enter a local path") + "\n" + m.input.View() + "\n\nEnter continue • Esc cancel"
+	case confirmMode:
+		content = accent.Render("Overwrite existing file?") + "\n\n" + tuiText(m.conflict) + "\n\n[y] overwrite  [n/Esc] keep existing file"
+	default:
+		content = m.remote.View()
+	}
+	if m.busy {
+		content += "\n" + m.spinner.View() + " " + m.activity + "  Esc: cancel • q: cancel and quit"
+		if m.meter != nil {
+			state := m.progressState
+			percent := 0.0
+			if state.Total > 0 {
+				percent = float64(state.Done) / float64(state.Total)
+			}
+			if state.Phase != transfer.Complete {
+				percent = min(percent, 0.99)
+			}
+			phase := ""
+			if state.Phase == transfer.Finalizing {
+				phase = "  finishing..."
+			}
+			content += "\n" + m.progress.ViewAs(percent) + "\n" + transferBytes(state.Done) + " / " + transferBytes(state.Total) + phase
+			elapsed := time.Since(m.started).Seconds()
+			if elapsed > 0 && state.Done > 0 {
+				content += "  " + transferBytes(int64(float64(state.Done)/elapsed)) + "/s"
+			}
+		}
+	}
+	if m.status != "" {
+		style := muted
+		if m.statusError {
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+		}
+		content += "\n" + style.Render(ansi.Truncate(m.status, m.width-4, "…"))
+	}
+	// Width constrains long names and errors; widgets own pagination/scrolling.
+	view := tea.NewView(lipgloss.NewStyle().Width(max(m.width-4, 16)).Padding(1, 2).Render(header + "\n" + content))
+	view.AltScreen = true
+	return view
+}
 func tuiText(value string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return '?'
 		}
 		return r
 	}, value)
 }
-
-func (ui *tui) loop() error {
-	for {
-		ui.render()
-		key, err := tuiReadKey(ui.fd)
-		if err != nil {
-			return err
-		}
-		switch key {
-		case 'q', 'Q', 3:
-			return nil
-		case 'j', 'J':
-			ui.move(1)
-		case 'k', 'K':
-			ui.move(-1)
-		case 'r', 'R':
-			if err := ui.load(); err != nil {
-				ui.status = "refresh: " + err.Error()
-			}
-		case '\r', '\n':
-			if err := ui.enter(); err != nil {
-				ui.status = err.Error()
-			}
-		case 8, 127, 'h', 'H':
-			if err := ui.parent(); err != nil {
-				ui.status = err.Error()
-			}
-		case 'u', 'U':
-			if err := ui.upload(); err != nil {
-				if !errors.Is(err, io.EOF) {
-					ui.status = "upload: " + err.Error()
-				}
-			}
-		case 'd', 'D':
-			if err := ui.download(); err != nil {
-				if !errors.Is(err, io.EOF) {
-					ui.status = "download: " + err.Error()
-				}
-			}
-		case 'g', 'G':
-			ui.current = nil
-			ui.currentPath = "/"
-			ui.cursor = 0
-			if err := ui.load(); err != nil {
-				ui.status = "root: " + err.Error()
-			}
-		case '?':
-			ui.status = "Enter opens a folder; u uploads into it; d downloads the selected file."
-		}
-	}
-}
-
-func (ui *tui) move(delta int) {
-	if len(ui.entries) == 0 {
-		return
-	}
-	ui.cursor += delta
-	if ui.cursor < 0 {
-		ui.cursor = len(ui.entries) - 1
-	}
-	if ui.cursor >= len(ui.entries) {
-		ui.cursor = 0
-	}
-}
-
-func (ui *tui) enter() error {
-	entry := ui.selected()
-	if entry == nil {
-		return errors.New("no remote entry selected")
-	}
-	if !entry.Dir {
-		return errors.New("selected entry is a file; press d to download it")
-	}
-	copy := *entry
-	ui.current = &copy
-	if ui.currentPath == "/" {
-		ui.currentPath = "/" + entry.Name
-	} else {
-		ui.currentPath = path.Join(ui.currentPath, entry.Name)
-	}
-	ui.cursor = 0
-	return ui.load()
-}
-
-func (ui *tui) parent() error {
-	if ui.current == nil {
-		return errors.New("already at the remote root")
-	}
-	parentID := anyshare.ParentID(ui.current.ID)
-	parentPath := path.Dir(ui.currentPath)
-	if parentID == "" || parentPath == "." || parentPath == "/" {
-		ui.current = nil
-		ui.currentPath = "/"
-	} else {
-		ui.current = &anyshare.Entry{ID: parentID, Name: path.Base(parentPath), Dir: true, Size: -1}
-		ui.currentPath = parentPath
-	}
-	ui.cursor = 0
-	return ui.load()
-}
-
-func (ui *tui) prompt(label, defaultValue string) (string, error) {
-	if err := term.Restore(ui.fd, ui.raw); err != nil {
-		return "", err
-	}
-	if defaultValue != "" {
-		fmt.Fprintf(os.Stdout, "\r\n%s [%s]: ", label, defaultValue)
-	} else {
-		fmt.Fprintf(os.Stdout, "\r\n%s: ", label)
-	}
-	line, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
-	raw, rawErr := term.MakeRaw(ui.fd)
-	if rawErr == nil {
-		ui.raw = raw
-	}
-	if readErr != nil {
-		return "", readErr
-	}
-	if rawErr != nil {
-		return "", rawErr
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		line = defaultValue
-	}
-	return line, nil
-}
-
 func expandTUIPath(value string) string {
 	if value != "~" && !strings.HasPrefix(value, "~/") {
 		return value
@@ -253,149 +602,4 @@ func expandTUIPath(value string) string {
 		return home
 	}
 	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
-}
-
-func (ui *tui) upload() error {
-	if ui.current == nil {
-		return errors.New("enter a library or folder before uploading")
-	}
-	local, err := ui.prompt("Local file to upload", "")
-	if err != nil || local == "" {
-		return err
-	}
-	local = expandTUIPath(local)
-	file, err := os.Open(local)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("upload source must be a regular file")
-	}
-	name := filepath.Base(local)
-	if !anyshare.ValidName(name) {
-		return errors.New("upload source has an invalid file name")
-	}
-	entries, err := ui.client.List(ui.ctx, ui.current.ID)
-	if err != nil {
-		return err
-	}
-	var existing *anyshare.Entry
-	for i := range entries {
-		if entries[i].Name != name {
-			continue
-		}
-		if entries[i].Dir {
-			return errors.New("a folder with that name already exists")
-		}
-		answer, promptErr := ui.prompt("Overwrite remote "+name+"? [y/N]", "")
-		if promptErr != nil {
-			return promptErr
-		}
-		if strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
-			return nil
-		}
-		candidate := entries[i]
-		existing = &candidate
-		break
-	}
-	opCtx, cancel := context.WithTimeout(ui.ctx, ui.timeout)
-	defer cancel()
-	progress := newTransferProgress("Upload", info.Size())
-	entry, err := ui.client.Upload(opCtx, ui.current.ID, name, existing, progressReaderAt{reader: file, progress: progress}, info.Size(), info.ModTime())
-	progress.finish(err)
-	if err != nil {
-		return err
-	}
-	ui.status = fmt.Sprintf("uploaded %s (%d bytes)", entry.Name, entry.Size)
-	return ui.load()
-}
-
-func (ui *tui) download() error {
-	entry := ui.selected()
-	if entry == nil {
-		return errors.New("no remote entry selected")
-	}
-	if entry.Dir {
-		return errors.New("selected entry is a folder; press Enter to open it")
-	}
-	defaultPath := filepath.Join(".", entry.Name)
-	destination, err := ui.prompt("Local destination", defaultPath)
-	if err != nil {
-		return err
-	}
-	destination = expandTUIPath(destination)
-	if info, statErr := os.Stat(destination); statErr == nil && info.IsDir() {
-		destination = filepath.Join(destination, entry.Name)
-	}
-	overwrite := false
-	if _, statErr := os.Lstat(destination); statErr == nil {
-		answer, promptErr := ui.prompt("Overwrite local "+destination+"? [y/N]", "")
-		if promptErr != nil {
-			return promptErr
-		}
-		overwrite = strings.ToLower(answer) == "y" || strings.ToLower(answer) == "yes"
-		if !overwrite {
-			return nil
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
-	}
-	opCtx, cancel := context.WithTimeout(ui.ctx, ui.timeout)
-	defer cancel()
-	err = downloadTo(opCtx, ui.client, *entry, destination, overwrite)
-	if err == nil {
-		ui.status = fmt.Sprintf("downloaded %s", entry.Name)
-	}
-	return err
-}
-
-func tuiReadKey(fd int) (byte, error) {
-	var one [1]byte
-	if _, err := unix.Read(fd, one[:]); err != nil {
-		return 0, err
-	}
-	if one[0] != 0x1b {
-		return one[0], nil
-	}
-	second, ok, err := tuiPollByte(fd, 75*time.Millisecond)
-	if err != nil || !ok || second != '[' {
-		return 0, err
-	}
-	third, ok, err := tuiPollByte(fd, 75*time.Millisecond)
-	if err != nil || !ok {
-		return 0, err
-	}
-	switch third {
-	case 'A':
-		return 'k', nil
-	case 'B':
-		return 'j', nil
-	default:
-		return 0, nil
-	}
-}
-
-func tuiPollByte(fd int, timeout time.Duration) (byte, bool, error) {
-	millis := int(timeout / time.Millisecond)
-	if millis < 1 {
-		millis = 1
-	}
-	poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	n, err := unix.Poll(poll, millis)
-	if err != nil {
-		return 0, false, err
-	}
-	if n == 0 {
-		return 0, false, nil
-	}
-	var one [1]byte
-	if _, err = unix.Read(fd, one[:]); err != nil {
-		return 0, false, err
-	}
-	return one[0], true, nil
 }
