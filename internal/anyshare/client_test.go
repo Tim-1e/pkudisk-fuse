@@ -2,39 +2,17 @@ package anyshare
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
-
-func TestRequestRetriesTransientGETEOF(t *testing.T) {
-	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if requests == 1 {
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Fatal(err)
-			}
-			_ = conn.Close()
-			return
-		}
-		_, _ = io.WriteString(w, "[]")
-	}))
-	defer server.Close()
-	client, err := New(server.URL, &testTokenSource{token: "test-access"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = client.Roots(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
-	}
-}
 
 type testTokenSource struct {
 	mu      sync.Mutex
@@ -86,5 +64,54 @@ func TestRequestRefreshesAfterUnauthorized(t *testing.T) {
 	source.mu.Unlock()
 	if requests != 2 || refreshes != 1 {
 		t.Fatalf("requests=%d refreshes=%d, want one retry and one refresh", requests, refreshes)
+	}
+}
+
+func TestAPIUsesVerifiedHTTP2(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("protocol = %s, want HTTP/2", r.Proto)
+		}
+		io.WriteString(w, "[]")
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	client, err := New(server.URL, &testTokenSource{token: "test-access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	tr := client.api.Transport.(*http.Transport)
+	tr.TLSClientConfig = &tls.Config{RootCAs: roots}
+	defer tr.CloseIdleConnections()
+	if _, err := client.Roots(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRequestReturnsEOFWithoutNetworkRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+	client, err := New(server.URL, &testTokenSource{token: "test-access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Roots(context.Background())
+	if !errors.Is(err, io.EOF) || calls.Load() != 1 {
+		t.Fatalf("error = %v, calls = %d", err, calls.Load())
+	}
+	if strings.Contains(err.Error(), "test-access") {
+		t.Fatal("error exposed the access token")
 	}
 }

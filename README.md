@@ -71,7 +71,7 @@ bin/pkudisk-fuse account remove work
 
 If IAAA requires a CAPTCHA or OTP/SMS verification, the driver prints a prompt. CAPTCHA images are written to a temporary file for the user to inspect and are removed after the answer is entered.
 
-Transient authentication and read-only API transport failures are retried a bounded number of times. Submitted password-login requests are not replayed. Refresh-token rotation is serialized across processes using the same account store. Transport errors identify the server and endpoint without including query parameters or credentials.
+HTTP clients use Go's default TLS and HTTP protocol negotiation. Transport failures are returned immediately without application-level retries. Refresh-token rotation is serialized across processes using the same account store. Transport errors identify the server and endpoint without including query parameters or credentials.
 
 ## Choosing the mounted root
 

@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -89,11 +88,7 @@ func New(opts Options) (*Session, error) {
 	}
 	jar, _ := cookiejar.New(nil)
 	s := &Session{base: base, iaaa: iaaa, challenge: opts.Challenge, onState: opts.OnState, refreshLock: opts.RefreshLock, loadState: opts.LoadState}
-	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
-	baseTransport.ForceAttemptHTTP2 = false
-	baseTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	baseTransport.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
-	transport := &retryTransport{baseTransport}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	s.http = &http.Client{Transport: transport, Jar: jar, Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 25 {
 			return errors.New("too many authentication redirects")
@@ -145,52 +140,35 @@ func (s *Session) request(ctx context.Context, method, raw, ctype string, body i
 	if err != nil || !s.allowed(u) {
 		return nil, nil, errors.New("untrusted authentication endpoint")
 	}
-	networkRetries := 0
-	for {
-		req, err := http.NewRequestWithContext(ctx, method, raw, body)
-		if err != nil {
-			return nil, nil, errors.New("invalid authentication request")
-		}
-		if ctype != "" {
-			req.Header.Set("Content-Type", ctype)
-		}
-		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36 pkudisk-fuse/1.0")
-		resp, err := s.http.Do(req)
-		if err != nil {
-			if networkRetries < 3 && retryableAuthRequest(method, u, err) && ctx.Err() == nil {
-				if err = waitAuthRetry(ctx, networkRetries); err != nil {
-					return nil, nil, err
-				}
-				networkRetries++
-				continue
-			}
-			var ue *url.Error
-			if errors.As(err, &ue) {
-				if endpoint, parseErr := url.Parse(ue.URL); parseErr == nil && s.allowed(endpoint) {
-					u = endpoint
-				}
-				method = strings.ToUpper(ue.Op)
-				err = ue.Err
-			}
-			return nil, nil, fmt.Errorf("authentication transport (%s %s%s): %w", method, u.Host, u.EscapedPath(), err)
-		}
-		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
-		if readErr != nil {
-			if networkRetries < 3 && retryableAuthRequest(method, u, readErr) && ctx.Err() == nil {
-				if err = waitAuthRetry(ctx, networkRetries); err != nil {
-					return nil, nil, err
-				}
-				networkRetries++
-				continue
-			}
-			return nil, nil, readErr
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, nil, &HTTPError{Status: resp.StatusCode, Method: method, Path: req.URL.Path}
-		}
-		return b, resp.Request.URL, nil
+	req, err := http.NewRequestWithContext(ctx, method, raw, body)
+	if err != nil {
+		return nil, nil, errors.New("invalid authentication request")
 	}
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36 pkudisk-fuse/1.0")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			if endpoint, parseErr := url.Parse(ue.URL); parseErr == nil && s.allowed(endpoint) {
+				u = endpoint
+			}
+			method = strings.ToUpper(ue.Op)
+			err = ue.Err
+		}
+		return nil, nil, fmt.Errorf("authentication transport (%s %s%s): %w", method, u.Host, u.EscapedPath(), err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, &HTTPError{Status: resp.StatusCode, Method: method, Path: req.URL.Path}
+	}
+	return b, resp.Request.URL, nil
 }
 func (s *Session) get(ctx context.Context, u string) ([]byte, *url.URL, error) {
 	return s.request(ctx, "GET", u, "", nil)
