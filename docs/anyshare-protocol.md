@@ -36,9 +36,11 @@ The driver uses these JSON calls:
 
 Downloads begin with `POST /api/efast/v1/file/osdownload`. The returned signed request is restricted to HTTPS on an HTTPS server and is used with a checked `Range` header for `ReadAt`.
 
-The standalone `download` command uses the same `osdownload` request without a range and verifies the exact selected revision size before atomically installing a local file. The standalone `upload` command resolves the destination parent from an accessible library, checks the existing revision when `--overwrite` is requested, and uses the same single or multipart upload sequence as the mounted filesystem.
+The standalone `download` command uses the same `osdownload` request with bounded byte ranges and verifies the exact selected revision size before atomically installing a local file. The range size is kept below the desktop portal's documented 2 GiB response limit; a fresh signed URL is obtained for each range. A server policy or quota can still reject a download.
 
-Small uploads use `osbeginupload`, a streaming multipart POST to the returned signed request, and `osendupload`. Larger uploads use `osinitmultiupload`, one signed `osuploadpart` request per part, `oscompleteupload`, and the signed completion request returned by that endpoint. A file overwrite includes its current `rev`; the driver obtains a fresh revision before upload and reports a conflict if it changed.
+Uploads use the desktop sync flow for every non-empty file: first `POST /api/efast/v1/file/osoption` obtains `partminsize`, `partmaxsize`, and `partmaxnum`; then the client uses `osinitmultiupload`, one signed `osuploadpart` request per part, `oscompleteupload`, and the signed completion request returned by that endpoint. This avoids the ordinary `osbeginupload` path's configured per-file limit (`403002070`, returned as `detail.file_limit_size`). The client increases the negotiated part size when needed and rejects only files beyond the server-reported multipart capacity. A file overwrite includes its current `rev`; the driver obtains a fresh revision before upload and reports a conflict if it changed.
+
+These measures only remove client/request-size limits. Account quota, administrator file policies, forbidden types, storage-service limits, and server-side object-storage limits remain authoritative and are reported as errors.
 
 ## Recovery boundary
 

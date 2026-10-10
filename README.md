@@ -102,6 +102,8 @@ Transfers handle one file at a time, not directory trees. A remote folder destin
 
 Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a maintained progress bar with percentage, transferred/total bytes, speed, and ETA. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is disabled when redirected; `--io-timeout` controls each file operation. Ctrl-C cancels CLI transfers; cancelled downloads preserve an existing destination and remove the temporary file.
 
+Uploads use the desktop client's multipart sync protocol, including for small non-empty files, so the ordinary single-request upload limit is avoided. Multipart parts are streamed from disk; the client negotiates the server's minimum part size, maximum part size, and maximum part count, then grows the part size as needed. Downloads use bounded ranged requests so a portal response-size limit does not cap a large file. Server quotas, administrator policies, and storage-service limits still apply.
+
 The `--root` option accepts either the displayed path or an AnyShare `gns://...` object ID. A folder can therefore be mounted directly:
 
 ```sh
