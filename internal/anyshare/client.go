@@ -3,10 +3,12 @@ package anyshare
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -39,6 +41,12 @@ func New(base string, tokens TokenSource) (*Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 60 * time.Second
 	tr.MaxIdleConnsPerHost = 16
+	// The service and its front proxy occasionally terminate HTTP/2 streams
+	// before response headers. HTTP/1.1 is stable here and still supports the
+	// bounded request retries below.
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	tr.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
 	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{base: u.String(), tokens: tokens, api: &http.Client{Transport: tr, Timeout: 90 * time.Second, CheckRedirect: noRedirect}, objects: &http.Client{Transport: tr, CheckRedirect: noRedirect}, PartSize: 16 << 20, PageSize: 1000}, nil
 }
@@ -52,7 +60,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 			return nil, err
 		}
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	authRetried := false
+	networkRetries := 0
+	for {
 		token := c.tokens.AccessToken()
 		req, err := http.NewRequestWithContext(ctx, method, c.base+"/api"+path, bytes.NewReader(data))
 		if err != nil {
@@ -63,14 +73,29 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 		req.Header.Set("Accept", "application/json")
 		resp, err := c.api.Do(req)
 		if err != nil {
+			if networkRetries < 2 && retryableRequest(method, path, err) && ctx.Err() == nil {
+				if err := waitRequestRetry(ctx, networkRetries); err != nil {
+					return nil, err
+				}
+				networkRetries++
+				continue
+			}
 			return nil, safeTransportError(err)
 		}
 		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 		resp.Body.Close()
 		if readErr != nil {
+			if networkRetries < 2 && retryableRequest(method, path, readErr) && ctx.Err() == nil {
+				if err := waitRequestRetry(ctx, networkRetries); err != nil {
+					return nil, err
+				}
+				networkRetries++
+				continue
+			}
 			return nil, readErr
 		}
-		if resp.StatusCode == 401 && attempt == 0 {
+		if resp.StatusCode == 401 && !authRetried {
+			authRetried = true
 			if err := c.tokens.Refresh(ctx, token); err != nil {
 				return nil, fmt.Errorf("refresh session: %w", err)
 			}
@@ -81,7 +106,39 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 		}
 		return b, nil
 	}
-	return nil, ErrPermission
+}
+
+func retryableRequest(method, path string, err error) bool {
+	readOnly := method == http.MethodGet || method == http.MethodHead ||
+		(method == http.MethodPost && (path == "/efast/v1/file/osdownload" || strings.HasSuffix(path, "/attribute") || path == "/eacp/v1/perm1/checkall"))
+	if !readOnly {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "timeout awaiting response headers") || strings.Contains(message, "connection reset by peer")
+}
+
+func waitRequestRetry(ctx context.Context, retry int) error {
+	delay := time.Duration(200*(1<<retry)) * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Signed URLs carry credentials; never include them in returned transport errors.

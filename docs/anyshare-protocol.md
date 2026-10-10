@@ -4,7 +4,7 @@ These notes describe the protocol boundary implemented by this repository. They 
 
 ## Session
 
-The web client starts at `/anyshare/oauth2/login?lang=zh-cn&redirect=/anyshare/`. The server redirects to `/oauth2/signin` and sets the OAuth challenge and state cookies. The third-party link is `/web/v1/sso?ty=auth`; it posts the official IAAA form to `https://iaaa.pku.edu.cn/iaaa/oauth.jsp`. IAAA account passwords are RSA PKCS#1 v1.5 encrypted with the public key from `/iaaa/getPublicKey.do`, then sent to `/iaaa/oauthlogin.do`. The returned one-time token is sent back to `/oauth2/signin` with the challenge and the `_rand` parameter used by the web client. The resulting `client.oauth2_token` and `client.oauth2_refresh_token` cookies are kept only in the process cookie jar.
+The web client starts at `/anyshare/oauth2/login?lang=zh-cn&redirect=/anyshare/`. The server redirects to `/oauth2/signin` and sets the OAuth challenge and state cookies. The third-party link is `/web/v1/sso?ty=auth`; it posts the official IAAA form to `https://iaaa.pku.edu.cn/iaaa/oauth.jsp`. IAAA account passwords are RSA PKCS#1 v1.5 encrypted with the public key from `/iaaa/getPublicKey.do`, then sent to `/iaaa/oauthlogin.do`. The returned one-time token is sent back to `/oauth2/signin` with the challenge and the `_rand` parameter used by the web client. The resulting `client.oauth2_token` and `client.oauth2_refresh_token` cookies are kept in a private in-memory jar during a session. The command-line account store may persist these two renewable cookies and the login password in an owner-only `0600` file so a selected account can resume without prompting.
 
 The refresh operation is a GET to `/anyshare/oauth2/login/refreshToken?isforced=true`. Scheduled renewal runs hourly, including when the filesystem is idle. A request that receives HTTP 401 also refreshes once and retries with the new token. All renewals use the same cookie jar and are serialized so parallel FUSE operations cannot rotate the same session concurrently. A rejected refresh token causes the mount to exit for supervised login; temporary network failures retain the mount and retry.
 
@@ -18,6 +18,8 @@ GET /api/efast/v1/folders/{url-escaped-gns-id}/sub_objects
 ```
 
 The legacy `POST /api/efast/v1/dir/list` endpoint is useful for diagnostics but is not used by the FUSE namespace. Every selected path is resolved from an allowed library; the driver never concatenates an unchecked user path into an API URL.
+
+The `ls` command uses the same root and paginated folder endpoints. With no selector it lists accessible libraries; with a display path or allowed `gns://...` selector it lists that folder. The terminal UI keeps the resolved parent ID in memory while browsing, so upload and download actions use the same checked namespace.
 
 ## Files and mutations
 
@@ -33,6 +35,8 @@ The driver uses these JSON calls:
 | move | `POST /api/efast/v1/file/move` or `dir/move` |
 
 Downloads begin with `POST /api/efast/v1/file/osdownload`. The returned signed request is restricted to HTTPS on an HTTPS server and is used with a checked `Range` header for `ReadAt`.
+
+The standalone `download` command uses the same `osdownload` request without a range and verifies the exact selected revision size before atomically installing a local file. The standalone `upload` command resolves the destination parent from an accessible library, checks the existing revision when `--overwrite` is requested, and uses the same single or multipart upload sequence as the mounted filesystem.
 
 Small uploads use `osbeginupload`, a streaming multipart POST to the returned signed request, and `osendupload`. Larger uploads use `osinitmultiupload`, one signed `osuploadpart` request per part, `oscompleteupload`, and the signed completion request returned by that endpoint. A file overwrite includes its current `rev`; the driver obtains a fresh revision before upload and reports a conflict if it changed.
 

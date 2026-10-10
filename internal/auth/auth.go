@@ -1,5 +1,5 @@
 // Package auth follows the official web login flow with a private in-memory
-// cookie jar. Passwords are used for login only; refresh tokens stay in memory.
+// cookie jar. Callers can persist the renewable session separately from passwords.
 package auth
 
 import (
@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -30,9 +31,12 @@ type Challenge struct {
 }
 type ChallengeFunc func(context.Context, Challenge) (string, error)
 type Options struct {
-	Server    string
-	IAAA      string
-	Challenge ChallengeFunc
+	Server      string
+	IAAA        string
+	Challenge   ChallengeFunc
+	OnState     func(State) error
+	RefreshLock func(context.Context) (io.Closer, error)
+	LoadState   func() (State, error)
 }
 type Credentials struct {
 	Username string
@@ -42,7 +46,9 @@ type Credentials struct {
 	Captcha  string
 }
 
-var ErrSessionExpired = errors.New("session expired; mount again with username and password")
+const DefaultServer = "https://disk.pku.edu.cn"
+
+var ErrSessionExpired = errors.New("session expired; log in again with username and password")
 
 type HTTPError struct {
 	Status int
@@ -55,17 +61,20 @@ func (e *HTTPError) Error() string {
 }
 
 type Session struct {
-	mu        sync.Mutex
-	base      *url.URL
-	iaaa      *url.URL
-	http      *http.Client
-	token     string
-	challenge ChallengeFunc
+	mu          sync.Mutex
+	base        *url.URL
+	iaaa        *url.URL
+	http        *http.Client
+	token       string
+	challenge   ChallengeFunc
+	onState     func(State) error
+	refreshLock func(context.Context) (io.Closer, error)
+	loadState   func() (State, error)
 }
 
 func New(opts Options) (*Session, error) {
 	if opts.Server == "" {
-		opts.Server = "https://disk.pku.edu.cn"
+		opts.Server = DefaultServer
 	}
 	if opts.IAAA == "" {
 		opts.IAAA = "https://iaaa.pku.edu.cn"
@@ -79,8 +88,13 @@ func New(opts Options) (*Session, error) {
 		return nil, err
 	}
 	jar, _ := cookiejar.New(nil)
-	s := &Session{base: base, iaaa: iaaa, challenge: opts.Challenge}
-	s.http = &http.Client{Jar: jar, Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	s := &Session{base: base, iaaa: iaaa, challenge: opts.Challenge, onState: opts.OnState, refreshLock: opts.RefreshLock, loadState: opts.LoadState}
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	baseTransport.ForceAttemptHTTP2 = false
+	baseTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	baseTransport.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
+	transport := &retryTransport{baseTransport}
+	s.http = &http.Client{Transport: transport, Jar: jar, Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 25 {
 			return errors.New("too many authentication redirects")
 		}
@@ -123,6 +137,7 @@ func (s *Session) Close() {
 	defer s.mu.Unlock()
 	s.token = ""
 	s.http.Jar, _ = cookiejar.New(nil)
+	s.http.CloseIdleConnections()
 }
 
 func (s *Session) request(ctx context.Context, method, raw, ctype string, body io.Reader) ([]byte, *url.URL, error) {
@@ -130,31 +145,52 @@ func (s *Session) request(ctx context.Context, method, raw, ctype string, body i
 	if err != nil || !s.allowed(u) {
 		return nil, nil, errors.New("untrusted authentication endpoint")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, raw, body)
-	if err != nil {
-		return nil, nil, errors.New("invalid authentication request")
-	}
-	if ctype != "" {
-		req.Header.Set("Content-Type", ctype)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36 pkudisk-fuse/1.0")
-	resp, err := s.http.Do(req)
-	if err != nil {
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			return nil, nil, fmt.Errorf("authentication transport: %w", ue.Err)
+	networkRetries := 0
+	for {
+		req, err := http.NewRequestWithContext(ctx, method, raw, body)
+		if err != nil {
+			return nil, nil, errors.New("invalid authentication request")
 		}
-		return nil, nil, err
+		if ctype != "" {
+			req.Header.Set("Content-Type", ctype)
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36 pkudisk-fuse/1.0")
+		resp, err := s.http.Do(req)
+		if err != nil {
+			if networkRetries < 3 && retryableAuthRequest(method, u, err) && ctx.Err() == nil {
+				if err = waitAuthRetry(ctx, networkRetries); err != nil {
+					return nil, nil, err
+				}
+				networkRetries++
+				continue
+			}
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				if endpoint, parseErr := url.Parse(ue.URL); parseErr == nil && s.allowed(endpoint) {
+					u = endpoint
+				}
+				method = strings.ToUpper(ue.Op)
+				err = ue.Err
+			}
+			return nil, nil, fmt.Errorf("authentication transport (%s %s%s): %w", method, u.Host, u.EscapedPath(), err)
+		}
+		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			if networkRetries < 3 && retryableAuthRequest(method, u, readErr) && ctx.Err() == nil {
+				if err = waitAuthRetry(ctx, networkRetries); err != nil {
+					return nil, nil, err
+				}
+				networkRetries++
+				continue
+			}
+			return nil, nil, readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, nil, &HTTPError{Status: resp.StatusCode, Method: method, Path: req.URL.Path}
+		}
+		return b, resp.Request.URL, nil
 	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, nil, &HTTPError{Status: resp.StatusCode, Method: method, Path: req.URL.Path}
-	}
-	return b, resp.Request.URL, nil
 }
 func (s *Session) get(ctx context.Context, u string) ([]byte, *url.URL, error) {
 	return s.request(ctx, "GET", u, "", nil)
@@ -250,7 +286,10 @@ func (s *Session) Login(ctx context.Context, credentials Credentials) error {
 	if err = s.loginIAAA(ctx, credentials, page); err != nil {
 		return err
 	}
-	return s.updateToken()
+	if err = s.updateToken(); err != nil {
+		return err
+	}
+	return s.persistState()
 }
 
 func publicKey(raw string) (*rsa.PublicKey, error) {
@@ -462,26 +501,16 @@ func (s *Session) updateToken() error {
 }
 
 func (s *Session) Refresh(ctx context.Context, rejected string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.token != "" && s.token != rejected {
-		return nil
-	}
-	_, _, err := s.get(ctx, s.base.String()+"/anyshare/oauth2/login/refreshToken?isforced=true")
-	if err != nil {
-		var response *HTTPError
-		if errors.As(err, &response) && (response.Status == 400 || response.Status == 401 || response.Status == 403) {
-			return fmt.Errorf("%w: %w", ErrSessionExpired, err)
+	var unlock io.Closer
+	var err error
+	if s.refreshLock != nil {
+		unlock, err = s.refreshLock(ctx)
+		if err != nil {
+			return fmt.Errorf("lock authentication session: %w", err)
 		}
-		return err
+		defer unlock.Close()
 	}
-	if err = s.updateToken(); err != nil {
-		return fmt.Errorf("%w: %w", ErrSessionExpired, err)
-	}
-	if s.token == rejected {
-		return ErrSessionExpired
-	}
-	return nil
+	return s.refresh(ctx, rejected, true)
 }
 
 // KeepAlive renews an idle session, including rotating refresh cookies in the

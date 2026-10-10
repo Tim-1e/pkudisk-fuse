@@ -1,45 +1,26 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"golang.org/x/sys/unix"
-	"golang.org/x/term"
 	"pkudisk-fuse/internal/anyshare"
 	"pkudisk-fuse/internal/auth"
 	"pkudisk-fuse/internal/vfs"
 )
 
 var version = "dev"
-
-type authFlags struct {
-	server, username, passwordFile, credentialsFile string
-	stdin                                           bool
-}
-
-func (f *authFlags) add(set *flag.FlagSet) {
-	set.StringVar(&f.server, "server", "https://disk.pku.edu.cn", "AnyShare server URL")
-	set.StringVar(&f.username, "username", "", "login username (prompted if omitted)")
-	set.StringVar(&f.passwordFile, "password-file", "", "read password from an owner-only file")
-	set.StringVar(&f.credentialsFile, "credentials-file", "", "read campus username/password from an owner-only JSON file")
-	set.BoolVar(&f.stdin, "password-stdin", false, "read password from standard input")
-}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -50,15 +31,20 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   pkudisk-fuse mount [options] MOUNTPOINT
-  pkudisk-fuse roots [authentication options] [--json]
-  pkudisk-fuse ls [authentication options] [--json] PATH-OR-GNS-ID
+  pkudisk-fuse root [authentication options] [--json]
+  pkudisk-fuse ls [authentication options] [--json] [PATH-OR-GNS-ID]
+  pkudisk-fuse tui [authentication options]
+  pkudisk-fuse account [list|add|default|remove] [options]
+  pkudisk-fuse upload [authentication options] LOCAL-PATH REMOTE-PATH
+  pkudisk-fuse download [authentication options] REMOTE-PATH [LOCAL-PATH]
   pkudisk-fuse recover [--cache-dir PATH] [--json]
   pkudisk-fuse version
 
-Mount requires username and password. Use --username and a hidden password
-prompt, --password-file, --password-stdin, or --credentials-file.
+Commands reuse the default saved account. Use --account NAME to select one,
+or --username and a hidden password prompt, --password-file,
+--password-stdin, or --credentials-file for a login.
 --root '/LIBRARY/FOLDER' or --root 'gns://...' selects a library/folder;
-omitting it mounts all accessible libraries. Run 'mount --help' for options.`)
+omitting it mounts all accessible libraries. Run a command with --help for options.`)
 }
 
 func defaultCache() string {
@@ -82,7 +68,9 @@ func run(args []string) error {
 		return nil
 	case "recover":
 		return recovery(args[1:])
-	case "mount", "roots", "ls":
+	case "account":
+		return accountCommand(args[1:])
+	case "mount", "root", "ls", "tui", "upload", "download":
 	default:
 		usage()
 		return errors.New("unknown command")
@@ -91,8 +79,8 @@ func run(args []string) error {
 	set := flag.NewFlagSet(command, flag.ContinueOnError)
 	var credentials authFlags
 	credentials.add(set)
-	var root, cache string
-	var readOnly, debug, jsonOutput bool
+	var root, cache, output string
+	var readOnly, debug, jsonOutput, overwrite bool
 	var cacheLimit, partSize int64
 	var ttl, timeout, refreshInterval time.Duration
 	if command == "mount" {
@@ -105,8 +93,18 @@ func run(args []string) error {
 		set.DurationVar(&refreshInterval, "refresh-interval", time.Hour, "renew idle authentication sessions at this interval; 0 uses refresh on HTTP 401 only")
 		set.BoolVar(&readOnly, "read-only", false, "mount read-only")
 		set.BoolVar(&debug, "debug", false, "enable FUSE protocol diagnostics")
-	} else {
+	} else if command == "root" || command == "ls" {
 		set.BoolVar(&jsonOutput, "json", false, "output entries as JSON")
+	} else if command == "tui" {
+		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "upload/download timeout")
+	} else if command == "upload" {
+		set.StringVar(&output, "remote", "", "remote destination path (also accepted as the second argument)")
+		set.BoolVar(&overwrite, "overwrite", false, "replace an existing remote file")
+		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "upload timeout")
+	} else {
+		set.StringVar(&output, "output", "", "local output file (defaults to the remote file name)")
+		set.BoolVar(&overwrite, "overwrite", false, "replace an existing local file")
+		set.DurationVar(&timeout, "io-timeout", 10*time.Minute, "download timeout")
 	}
 	if err := set.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -117,39 +115,88 @@ func run(args []string) error {
 	if command == "mount" && set.NArg() != 1 {
 		return errors.New("mount requires one mountpoint; place options before it")
 	}
-	if command == "ls" && set.NArg() != 1 {
-		return errors.New("ls requires one library/folder path or gns:// ID")
+	if command == "ls" && set.NArg() > 1 {
+		return errors.New("ls accepts at most one library/folder path or gns:// ID")
 	}
-	if command == "roots" && set.NArg() != 0 {
-		return errors.New("roots takes no positional arguments")
+	if command == "root" && set.NArg() != 0 {
+		return errors.New("root takes no positional arguments")
+	}
+	if command == "tui" && set.NArg() != 0 {
+		return errors.New("tui takes no positional arguments")
+	}
+	if command == "upload" && (set.NArg() < 1 || set.NArg() > 2) {
+		return errors.New("upload requires LOCAL-PATH and REMOTE-PATH (or --remote REMOTE-PATH)")
+	}
+	if command == "upload" && output != "" && set.NArg() == 2 {
+		return errors.New("upload accepts the remote destination either as the second argument or with --remote, not both")
+	}
+	if command == "download" && (set.NArg() < 1 || set.NArg() > 2) {
+		return errors.New("download requires REMOTE-PATH and optional LOCAL-PATH")
+	}
+	if command == "download" && output != "" && set.NArg() == 2 {
+		return errors.New("download accepts the local destination either as the second argument or with --output, not both")
 	}
 	if command == "mount" && (cacheLimit < 0 || partSize < 5<<20 || ttl < 0 || timeout <= 0 || refreshInterval < 0) {
 		return errors.New("invalid cache, part-size, or timeout option")
 	}
+	if (command == "upload" || command == "download" || command == "tui") && timeout <= 0 {
+		return errors.New("invalid I/O timeout")
+	}
 	ctx := context.Background()
-	session, err := authenticate(ctx, credentials)
+	credentials.announce = command != "tui"
+	session, serverURL, _, err := authenticate(ctx, credentials)
 	if err != nil {
 		return err
 	}
 	defer session.Close()
-	client, err := anyshare.New(credentials.server, session)
+	client, err := anyshare.New(serverURL, session)
 	if err != nil {
 		return err
 	}
-	if command == "roots" {
+	if command == "root" {
 		entries, err := client.Roots(ctx)
 		if err != nil {
 			return err
 		}
 		return printEntries(entries, jsonOutput)
 	}
+	if command == "upload" {
+		local := set.Arg(0)
+		remote := output
+		if remote == "" && set.NArg() == 2 {
+			remote = set.Arg(1)
+		}
+		if remote == "" {
+			return errors.New("upload requires a remote destination path")
+		}
+		transferCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return uploadFile(transferCtx, client, local, remote, overwrite)
+	}
+	if command == "download" {
+		remote := set.Arg(0)
+		local := output
+		if local == "" && set.NArg() == 2 {
+			local = set.Arg(1)
+		}
+		transferCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return downloadFile(transferCtx, client, remote, local, overwrite)
+	}
+	if command == "tui" {
+		return runTUI(ctx, client, timeout)
+	}
 	if command == "ls" {
 		var entries []anyshare.Entry
-		if set.Arg(0) == "/" {
+		selector := "/"
+		if set.NArg() == 1 {
+			selector = set.Arg(0)
+		}
+		if selector == "/" {
 			entries, err = client.Roots(ctx)
 		} else {
 			var e anyshare.Entry
-			e, err = client.Resolve(ctx, set.Arg(0))
+			e, err = client.Resolve(ctx, selector)
 			if err == nil {
 				if !e.Dir {
 					return syscall.ENOTDIR
@@ -272,135 +319,6 @@ func printEntries(entries []anyshare.Entry, asJSON bool) error {
 		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", e.Name, typ, e.Size, e.ID)
 	}
 	return w.Flush()
-}
-
-func privateFile(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || !ok || st.Uid != uint32(os.Getuid()) {
-		return nil, errors.New("credential file must be a regular owner-only file (chmod 600)")
-	}
-	b, err := io.ReadAll(io.LimitReader(file, 8193))
-	if err != nil {
-		return nil, err
-	}
-	if len(b) > 8192 {
-		return nil, errors.New("credential file is too large")
-	}
-	return b, nil
-}
-
-func passwordBytes(b []byte) []byte {
-	return bytes.TrimSuffix(bytes.TrimSuffix(b, []byte("\n")), []byte("\r"))
-}
-
-func ttyInput(label string, hidden bool) ([]byte, error) {
-	file, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return nil, errors.New("interactive terminal unavailable; provide --username and --password-file")
-	}
-	defer file.Close()
-	fmt.Fprint(file, label)
-	if hidden {
-		b, err := term.ReadPassword(int(file.Fd()))
-		fmt.Fprintln(file)
-		return b, err
-	}
-	line, err := bufio.NewReader(file).ReadString('\n')
-	return []byte(strings.TrimSpace(line)), err
-}
-
-func authenticate(ctx context.Context, opts authFlags) (*auth.Session, error) {
-	var c auth.Credentials
-	if opts.credentialsFile != "" {
-		if opts.username != "" || opts.passwordFile != "" || opts.stdin {
-			return nil, errors.New("--credentials-file cannot be combined with other credential options")
-		}
-		b, err := privateFile(opts.credentialsFile)
-		if err != nil {
-			return nil, err
-		}
-		defer clear(b)
-		var v struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-			OTP      string `json:"otp"`
-			SMS      string `json:"sms"`
-		}
-		if err = json.Unmarshal(b, &v); err != nil {
-			return nil, errors.New("invalid credentials JSON")
-		}
-		c = auth.Credentials{Username: v.Username, Password: []byte(v.Password), OTP: v.OTP, SMS: v.SMS}
-	} else {
-		c.Username = opts.username
-		if c.Username == "" {
-			b, err := ttyInput("Username: ", false)
-			if err != nil {
-				return nil, err
-			}
-			c.Username = string(b)
-		}
-		if opts.passwordFile != "" && opts.stdin {
-			return nil, errors.New("choose either --password-file or --password-stdin")
-		}
-		var err error
-		switch {
-		case opts.passwordFile != "":
-			c.Password, err = privateFile(opts.passwordFile)
-			c.Password = passwordBytes(c.Password)
-		case opts.stdin:
-			c.Password, err = io.ReadAll(io.LimitReader(os.Stdin, 8193))
-			c.Password = passwordBytes(c.Password)
-		default:
-			c.Password, err = ttyInput("Password: ", true)
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-	defer clear(c.Password)
-	if len(c.Password) > 8192 {
-		return nil, errors.New("password is too long")
-	}
-	s, err := auth.New(auth.Options{Server: opts.server, Challenge: func(ctx context.Context, challenge auth.Challenge) (string, error) {
-		if len(challenge.Image) > 0 {
-			file, err := os.CreateTemp("", "pkudisk-captcha-*.png")
-			if err != nil {
-				return "", err
-			}
-			path := file.Name()
-			defer os.Remove(path)
-			_, err = file.Write(challenge.Image)
-			file.Close()
-			if err != nil {
-				return "", err
-			}
-			fmt.Fprintln(os.Stderr, "CAPTCHA image:", path)
-		}
-		b, err := ttyInput(challenge.Kind+": ", true)
-		if err != nil {
-			return "", err
-		}
-		defer clear(b)
-		return string(b), nil
-	}})
-	if err != nil {
-		return nil, err
-	}
-	if err = s.Login(ctx, c); err != nil {
-		s.Close()
-		return nil, err
-	}
-	return s, nil
 }
 
 func recovery(args []string) error {

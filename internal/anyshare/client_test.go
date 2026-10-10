@@ -2,11 +2,39 @@ package anyshare
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 )
+
+func TestRequestRetriesTransientGETEOF(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, "[]")
+	}))
+	defer server.Close()
+	client, err := New(server.URL, &testTokenSource{token: "test-access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Roots(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
 
 type testTokenSource struct {
 	mu      sync.Mutex
