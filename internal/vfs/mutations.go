@@ -13,6 +13,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 )
 
 func (n *Node) find(ctx context.Context, name string) (*Node, error) {
@@ -38,7 +39,9 @@ func (n *Node) mutable() syscall.Errno {
 	return 0
 }
 
-func (n *Node) Create(ctx context.Context, name string, flags, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+func (n *Node) Create(ctx context.Context, name string, flags, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, handle fs.FileHandle, openFlags uint32, result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "create directory=%q name=%q flags=%#x", n.traceName, name, flags)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if code := n.mutable(); code != 0 {
 		return nil, nil, 0, code
 	}
@@ -75,7 +78,9 @@ func (n *Node) Create(ctx context.Context, name string, flags, mode uint32, out 
 	return child, &Handle{node: node, writable: flags&syscall.O_ACCMODE != syscall.O_RDONLY, append: flags&syscall.O_APPEND != 0}, 0, 0
 }
 
-func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "mkdir directory=%q name=%q", n.traceName, name)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if code := n.mutable(); code != 0 {
 		return nil, code
 	}
@@ -100,7 +105,9 @@ func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 	return child, 0
 }
 
-func (n *Node) Unlink(ctx context.Context, name string) syscall.Errno {
+func (n *Node) Unlink(ctx context.Context, name string) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "unlink directory=%q name=%q", n.traceName, name)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if code := n.mutable(); code != 0 {
 		return code
 	}
@@ -128,7 +135,9 @@ func (n *Node) Unlink(ctx context.Context, name string) syscall.Errno {
 	return 0
 }
 
-func (n *Node) Rmdir(ctx context.Context, name string) syscall.Errno {
+func (n *Node) Rmdir(ctx context.Context, name string) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "rmdir directory=%q name=%q", n.traceName, name)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if code := n.mutable(); code != 0 {
 		return code
 	}
@@ -156,7 +165,9 @@ func (n *Node) Rmdir(ctx context.Context, name string) syscall.Errno {
 	return 0
 }
 
-func (n *Node) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+func (n *Node) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "setattr file=%q", n.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if code := n.mutable(); code != 0 {
 		return code
 	}
@@ -220,7 +231,9 @@ func (n *Node) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttrIn,
 	return 0
 }
 
-func (n *Node) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+func (n *Node) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "rename directory=%q from=%q to=%q", n.traceName, name, newName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	parent, ok := newParent.(*Node)
 	if !ok || parent.f != n.f {
 		return syscall.EXDEV

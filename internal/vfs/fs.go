@@ -8,6 +8,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"hash/fnv"
 	"os"
 	"syscall"
@@ -99,18 +100,25 @@ func (n *Node) fillLocked(a *fuse.Attr) {
 	a.SetTimes(&mtime, &mtime, &created)
 }
 
-func (n *Node) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+func (n *Node) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "getattr file=%q", n.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
+	n.f.opts.Trace.Printf(ctx, "waiting for file metadata lock")
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.synthetic && !n.dirty && !n.unlinked && n.refs == 0 && time.Since(n.statAt) >= n.f.opts.TTL {
+		n.f.opts.Trace.Printf(ctx, "attribute cache expired; refreshing metadata from server")
 		entry, err := n.f.backend.Stat(ctx, n.entry)
 		if err != nil {
 			return n.failure("stat", err)
 		}
 		n.entry = entry
 		n.statAt = time.Now()
+	} else {
+		n.f.opts.Trace.Printf(ctx, "using local metadata (open-handles=%d pending-write=%t)", n.refs, n.dirty)
 	}
 	n.fillLocked(&out.Attr)
+	n.f.opts.Trace.Printf(ctx, "attributes returned: size=%d mode=%#o", out.Size, out.Mode)
 	return 0
 }
 
@@ -123,7 +131,9 @@ func (n *Node) child(ctx context.Context, e anyshare.Entry) *fs.Inode {
 	return n.NewInode(ctx, n.f.makeNode(e), stable(e))
 }
 
-func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (inode *fs.Inode, result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "lookup directory=%q name=%q", n.traceName, name)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	entries, err := n.f.list(ctx, n, false)
 	if err != nil {
 		return nil, n.failure("lookup", err)
@@ -141,7 +151,9 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 	return nil, syscall.ENOENT
 }
 
-func (n *Node) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+func (n *Node) Readdir(ctx context.Context) (streamOut fs.DirStream, result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "readdir directory=%q", n.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	entries, err := n.f.list(ctx, n, false)
 	if err != nil {
 		return nil, n.failure("readdir", err)
@@ -154,7 +166,9 @@ func (n *Node) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream(stream), 0
 }
 
-func (n *Node) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+func (n *Node) Open(ctx context.Context, flags uint32) (handle fs.FileHandle, openFlags uint32, result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "open file=%q flags=%#x", n.traceName, flags)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	writable := flags&syscall.O_ACCMODE != syscall.O_RDONLY
 	if writable && n.f.opts.ReadOnly {
 		return nil, 0, syscall.EROFS
@@ -165,6 +179,7 @@ func (n *Node) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, s
 		return nil, 0, syscall.EISDIR
 	}
 	if n.refs == 0 && !n.dirty && !n.unlinked {
+		n.f.opts.Trace.Printf(ctx, "first open: checking current server revision")
 		entry, err := n.f.backend.Stat(ctx, n.entry)
 		if err != nil {
 			return nil, 0, n.failure("open", err)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 )
 
 // State contains the raw AnyShare cookie values. It is sensitive and must only
@@ -75,15 +77,19 @@ func (s *Session) persistState() error {
 
 // Restore validates a saved session by renewing it with the server before use.
 // An expired refresh token returns ErrSessionExpired, allowing password login.
-func (s *Session) Restore(ctx context.Context, state State) error {
+func (s *Session) Restore(ctx context.Context, state State) (result error) {
+	ctx, finish := s.trace.Begin(ctx, "restore saved authentication session")
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	var unlock io.Closer
 	var err error
 	if s.refreshLock != nil {
+		s.trace.Printf(ctx, "waiting for saved-session lock")
 		unlock, err = s.refreshLock(ctx)
 		if err != nil {
 			return fmt.Errorf("lock authentication session: %w", err)
 		}
 		defer unlock.Close()
+		s.trace.Printf(ctx, "saved-session lock acquired")
 	}
 	initial := state
 	if s.loadState != nil {
@@ -113,7 +119,9 @@ func (s *Session) Restore(ctx context.Context, state State) error {
 }
 
 func (s *Session) refresh(ctx context.Context, rejected string, reload bool) error {
+	s.trace.Printf(ctx, "waiting for authentication lock")
 	s.mu.Lock()
+	s.trace.Printf(ctx, "authentication lock acquired")
 	defer s.mu.Unlock()
 	if reload && s.loadState != nil {
 		state, err := s.loadState()
@@ -128,6 +136,7 @@ func (s *Session) refresh(ctx context.Context, rejected string, reload bool) err
 		}
 	}
 	if s.token != "" && s.token != rejected {
+		s.trace.Printf(ctx, "session already renewed; reusing current access token")
 		return nil
 	}
 	_, _, err := s.get(ctx, s.base.String()+"/anyshare/oauth2/login/refreshToken?isforced=true")

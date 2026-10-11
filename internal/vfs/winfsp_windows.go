@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
@@ -28,6 +30,15 @@ type winHandle struct {
 	writable bool
 	append   bool
 	entries  []anyshare.Entry
+}
+
+type winResult int
+
+func (r winResult) String() string {
+	if r < 0 {
+		return "failed: " + fuse.Error(r).Error()
+	}
+	return fmt.Sprintf("success (result=%d)", r)
 }
 
 type WinFsp struct {
@@ -49,10 +60,13 @@ func NewWinFsp(ctx context.Context, core *FileSystem) *WinFsp {
 // user's SID. WinFsp documents -1 as the mounting user's UID/GID.
 func WinFspMountOptions() []string { return []string{"-o", "uid=-1,gid=-1"} }
 
-func (w *WinFsp) Init() { close(w.Ready) }
+func (w *WinFsp) Init() {
+	w.core.opts.Trace.Printf(w.ctx, "WinFsp initialized; mount ready")
+	close(w.Ready)
+}
 
-func (w *WinFsp) operation() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(w.ctx, w.core.opts.IOTimeout)
+func (w *WinFsp) operation(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, w.core.opts.IOTimeout)
 }
 
 func winError(err error) int {
@@ -213,32 +227,41 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) int {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp getattr path=%q handle=%d", value, fh)
+	defer func() { finish("%s", winResult(result)) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.node(ctx, value, fh)
 	if err != nil {
 		return winError(err)
 	}
+	w.core.opts.Trace.Printf(ctx, "waiting for file metadata lock")
 	node.mu.Lock()
 	defer node.mu.Unlock()
 	if !node.synthetic && !node.dirty && !node.unlinked && node.refs == 0 && time.Since(node.statAt) >= w.core.opts.TTL {
+		w.core.opts.Trace.Printf(ctx, "attribute cache expired; refreshing metadata from server")
 		entry, err := w.core.backend.Stat(ctx, node.entry)
 		if err != nil {
 			return winError(err)
 		}
 		node.entry, node.statAt = entry, time.Now()
+	} else {
+		w.core.opts.Trace.Printf(ctx, "using local metadata (open-handles=%d pending-write=%t)", node.refs, node.dirty)
 	}
 	mode := node.mode
 	if w.core.opts.ReadOnly || node.synthetic {
 		mode &= 0555
 	}
 	*stat = winStat(node.entry, mode)
+	w.core.opts.Trace.Printf(ctx, "attributes returned: size=%d mode=%#o", stat.Size, stat.Mode)
 	return 0
 }
 
-func (w *WinFsp) Open(value string, flags int) (int, uint64) {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Open(value string, flags int) (result int, fhOut uint64) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp open path=%q flags=%#x", value, flags)
+	defer func() { finish("%s handle=%d", winResult(result), fhOut) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.resolve(ctx, value)
 	if err != nil {
@@ -254,6 +277,7 @@ func (w *WinFsp) Open(value string, flags int) (int, uint64) {
 		return -fuse.EISDIR, ^uint64(0)
 	}
 	if node.refs == 0 && !node.dirty {
+		w.core.opts.Trace.Printf(ctx, "first open: checking current server revision")
 		entry, err := w.core.backend.Stat(ctx, node.entry)
 		if err != nil {
 			return winError(err), ^uint64(0)
@@ -281,13 +305,15 @@ func (w *WinFsp) Open(value string, flags int) (int, uint64) {
 	return 0, w.addHandle(&winHandle{node: node, writable: writable, append: flags&fuse.O_APPEND != 0})
 }
 
-func (w *WinFsp) Read(_ string, data []byte, off int64, fh uint64) int {
+func (w *WinFsp) Read(value string, data []byte, off int64, fh uint64) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp read path=%q handle=%d offset=%d requested=%s", value, fh, off, diagnostic.Size(len(data)))
+	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil {
 		return -fuse.EBADF
 	}
 	node := handle.node
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	n, err := node.readAt(ctx, data, off)
 	if err != nil && err != io.EOF {
@@ -296,7 +322,9 @@ func (w *WinFsp) Read(_ string, data []byte, off int64, fh uint64) int {
 	return n
 }
 
-func (w *WinFsp) Write(_ string, data []byte, off int64, fh uint64) int {
+func (w *WinFsp) Write(value string, data []byte, off int64, fh uint64) (result int) {
+	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp write path=%q handle=%d offset=%d requested=%s", value, fh, off, diagnostic.Size(len(data)))
+	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil || !handle.writable {
 		return -fuse.EBADF
@@ -327,7 +355,9 @@ func (w *WinFsp) Write(_ string, data []byte, off int64, fh uint64) int {
 	return n
 }
 
-func (w *WinFsp) Flush(_ string, fh uint64) int {
+func (w *WinFsp) Flush(value string, fh uint64) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp flush path=%q handle=%d", value, fh)
+	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil {
 		return -fuse.EBADF
@@ -335,7 +365,7 @@ func (w *WinFsp) Flush(_ string, fh uint64) int {
 	if !handle.writable {
 		return 0
 	}
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	handle.node.mu.Lock()
 	defer handle.node.mu.Unlock()
@@ -344,7 +374,9 @@ func (w *WinFsp) Flush(_ string, fh uint64) int {
 
 func (w *WinFsp) Fsync(value string, _ bool, fh uint64) int { return w.Flush(value, fh) }
 
-func (w *WinFsp) Release(_ string, fh uint64) int {
+func (w *WinFsp) Release(value string, fh uint64) (result int) {
+	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp release path=%q handle=%d", value, fh)
+	defer func() { finish("%s", winResult(result)) }()
 	w.mu.Lock()
 	handle := w.handles[fh]
 	delete(w.handles, fh)
@@ -382,8 +414,10 @@ func (w *WinFsp) parent(ctx context.Context, value string) (*Node, string, int) 
 	return node, path.Base(clean), 0
 }
 
-func (w *WinFsp) Create(value string, flags int, mode uint32) (int, uint64) {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Create(value string, flags int, mode uint32) (result int, fhOut uint64) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp create path=%q flags=%#x", value, flags)
+	defer func() { finish("%s handle=%d", winResult(result), fhOut) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	w.core.opMu.Lock()
 	defer w.core.opMu.Unlock()
@@ -415,8 +449,10 @@ func (w *WinFsp) Create(value string, flags int, mode uint32) (int, uint64) {
 	return 0, w.addHandle(&winHandle{node: node, writable: flags&fuse.O_ACCMODE != fuse.O_RDONLY, append: flags&fuse.O_APPEND != 0})
 }
 
-func (w *WinFsp) Mkdir(value string, mode uint32) int {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Mkdir(value string, mode uint32) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp mkdir path=%q", value)
+	defer func() { finish("%s", winResult(result)) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	w.core.opMu.Lock()
 	defer w.core.opMu.Unlock()
@@ -436,7 +472,9 @@ func (w *WinFsp) Mkdir(value string, mode uint32) int {
 	return 0
 }
 
-func (w *WinFsp) Truncate(value string, size int64, fh uint64) int {
+func (w *WinFsp) Truncate(value string, size int64, fh uint64) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp truncate path=%q size=%d handle=%d", value, size, fh)
+	defer func() { finish("%s", winResult(result)) }()
 	if w.core.opts.ReadOnly {
 		return -fuse.EROFS
 	}
@@ -446,7 +484,7 @@ func (w *WinFsp) Truncate(value string, size int64, fh uint64) int {
 	if handle := w.handle(fh); handle != nil && !handle.writable {
 		return -fuse.EBADF
 	}
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.node(ctx, value, fh)
 	if err != nil {
@@ -481,8 +519,10 @@ func (w *WinFsp) Truncate(value string, size int64, fh uint64) int {
 	return 0
 }
 
-func (w *WinFsp) remove(value string, directory bool) int {
-	ctx, cancel := w.operation()
+func (w *WinFsp) remove(value string, directory bool) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp remove path=%q directory=%t", value, directory)
+	defer func() { finish("%s", winResult(result)) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	w.core.opMu.Lock()
 	defer w.core.opMu.Unlock()
@@ -525,8 +565,10 @@ func (w *WinFsp) remove(value string, directory bool) int {
 func (w *WinFsp) Unlink(value string) int { return w.remove(value, false) }
 func (w *WinFsp) Rmdir(value string) int  { return w.remove(value, true) }
 
-func (w *WinFsp) Rename(oldPath, newPath string) int {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Rename(oldPath, newPath string) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp rename from=%q to=%q", oldPath, newPath)
+	defer func() { finish("%s", winResult(result)) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	w.core.opMu.Lock()
 	defer w.core.opMu.Unlock()
@@ -635,8 +677,10 @@ func (w *WinFsp) Rename(oldPath, newPath string) int {
 	return 0
 }
 
-func (w *WinFsp) Opendir(value string) (int, uint64) {
-	ctx, cancel := w.operation()
+func (w *WinFsp) Opendir(value string) (result int, fhOut uint64) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp opendir path=%q", value)
+	defer func() { finish("%s handle=%d", winResult(result), fhOut) }()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.resolve(ctx, value)
 	if err != nil {
@@ -655,7 +699,9 @@ func (w *WinFsp) Opendir(value string) (int, uint64) {
 	return 0, w.addHandle(&winHandle{node: node, entries: entries})
 }
 
-func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bool, off int64, fh uint64) int {
+func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bool, off int64, fh uint64) (result int) {
+	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp readdir path=%q handle=%d offset=%d", value, fh, off)
+	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil || off < 0 {
 		return -fuse.EBADF
@@ -686,7 +732,9 @@ func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bo
 func (w *WinFsp) Releasedir(value string, fh uint64) int { return w.Release(value, fh) }
 func (w *WinFsp) Fsyncdir(string, bool, uint64) int      { return 0 }
 
-func (w *WinFsp) Statfs(_ string, stat *fuse.Statfs_t) int {
+func (w *WinFsp) Statfs(value string, stat *fuse.Statfs_t) (result int) {
+	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp statfs path=%q", value)
+	defer func() { finish("%s", winResult(result)) }()
 	// Use the local cache volume's actual free space rather than inventing a
 	// remote quota. The server remains authoritative when publishing writes.
 	p, err := windows.UTF16PtrFromString(w.core.cacheDir)
@@ -701,11 +749,13 @@ func (w *WinFsp) Statfs(_ string, stat *fuse.Statfs_t) int {
 	return 0
 }
 
-func (w *WinFsp) Access(value string, mask uint32) int {
+func (w *WinFsp) Access(value string, mask uint32) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp access path=%q mask=%#x", value, mask)
+	defer func() { finish("%s", winResult(result)) }()
 	if mask&2 != 0 && w.core.opts.ReadOnly {
 		return -fuse.EROFS
 	}
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.resolve(ctx, value)
 	if err != nil {
@@ -717,11 +767,13 @@ func (w *WinFsp) Access(value string, mask uint32) int {
 	return 0
 }
 
-func (w *WinFsp) Chmod(value string, mode uint32) int {
+func (w *WinFsp) Chmod(value string, mode uint32) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp chmod path=%q mode=%#o", value, mode)
+	defer func() { finish("%s", winResult(result)) }()
 	if w.core.opts.ReadOnly {
 		return -fuse.EROFS
 	}
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.resolve(ctx, value)
 	if err != nil {
@@ -738,11 +790,13 @@ func (w *WinFsp) Chflags(value string, _ uint32) int {
 	return w.Access(value, 2)
 }
 
-func (w *WinFsp) Utimens(value string, times []fuse.Timespec) int {
+func (w *WinFsp) Utimens(value string, times []fuse.Timespec) (result int) {
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp set timestamps path=%q", value)
+	defer func() { finish("%s", winResult(result)) }()
 	if w.core.opts.ReadOnly {
 		return -fuse.EROFS
 	}
-	ctx, cancel := w.operation()
+	ctx, cancel := w.operation(ctx)
 	defer cancel()
 	node, err := w.resolve(ctx, value)
 	if err != nil {

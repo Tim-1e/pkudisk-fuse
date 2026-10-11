@@ -10,6 +10,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 )
 
 type Handle struct {
@@ -28,7 +29,9 @@ func (h *Handle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadRes
 	return fuse.ReadResultData(dest[:count]), 0
 }
 
-func (h *Handle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
+func (h *Handle) Write(ctx context.Context, data []byte, off int64) (countOut uint32, result syscall.Errno) {
+	ctx, finish := h.node.f.opts.Trace.Begin(ctx, "write file=%q offset=%d length=%d", h.node.traceName, off, len(data))
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if !h.writable {
 		return 0, syscall.EBADF
 	}
@@ -58,7 +61,9 @@ func (h *Handle) Write(ctx context.Context, data []byte, off int64) (uint32, sys
 	return uint32(count), n.failure("write", err)
 }
 
-func (h *Handle) Flush(ctx context.Context) syscall.Errno {
+func (h *Handle) Flush(ctx context.Context) (result syscall.Errno) {
+	ctx, finish := h.node.f.opts.Trace.Begin(ctx, "flush handle file=%q", h.node.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	if !h.writable {
 		return 0
 	}
@@ -71,7 +76,9 @@ func (h *Handle) Flush(ctx context.Context) syscall.Errno {
 }
 func (h *Handle) Fsync(ctx context.Context, flags uint32) syscall.Errno { return h.Flush(ctx) }
 
-func (h *Handle) Release(ctx context.Context) syscall.Errno {
+func (h *Handle) Release(ctx context.Context) (result syscall.Errno) {
+	ctx, finish := h.node.f.opts.Trace.Begin(ctx, "release handle file=%q", h.node.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
 	n := h.node
 	n.mu.Lock()
 	defer n.mu.Unlock()

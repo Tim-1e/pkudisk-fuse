@@ -102,7 +102,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	} else if _, err := client.Roots(ctx); err != nil {
 		return err
 	}
-	core, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, Read: &opts.read, TTL: opts.ttl, IOTimeout: opts.timeout})
+	core, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, Read: &opts.read, TTL: opts.ttl, IOTimeout: opts.timeout, Trace: opts.trace})
 	if err != nil {
 		return err
 	}
@@ -164,6 +164,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	case result = <-maintenanceFailed:
 	case <-ctx.Done():
 	}
+	opts.trace.Printf(ctx, "unmount requested; waiting for WinFsp to release handles")
 	if !host.Unmount() {
 		return errors.Join(result, errors.New("WinFsp unmount failed"))
 	}

@@ -59,7 +59,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	if len(contents) != 0 {
 		return errors.New("mountpoint must be an empty directory")
 	}
-	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, Read: &opts.read, TTL: ttl, IOTimeout: timeout})
+	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, Read: &opts.read, TTL: ttl, IOTimeout: timeout, Trace: opts.trace})
 	if err != nil {
 		return err
 	}
@@ -102,6 +102,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 			<-done
 			return errors.Join(err, filesystem.Close())
 		case <-ctx.Done():
+			opts.trace.Printf(ctx, "unmount requested; waiting for driver to release handles")
 			if err := server.Unmount(); err != nil {
 				return fmt.Errorf("unmount: %w", err)
 			}

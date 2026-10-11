@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.1` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -185,6 +185,16 @@ pkudisk-fuse mount ~/PKUNetDisk --read-whole-file 0 --read-block-size 1MiB --rea
 ```
 
 On Windows use an unused drive letter, such as `P:`, as the mountpoint. `mount --help` explains the policy and includes these examples without requiring an account or a network connection.
+
+For a slow or frozen application, capture mount decisions and requests in a log stored in a local folder:
+
+```powershell
+.\pkudisk-fuse.exe mount P: --verbose 2> mount.log
+```
+
+On Linux/macOS use an empty directory as the mountpoint. `--verbose` logs to stderr with timestamps and numbered `START`/`END` operations. Child operations identify their parent; an unmatched `START` is still pending. The log shows file paths/handles, metadata refreshes, file/cache lock waits, whole-file versus sequential/range planning, cache hits/misses, shared fetches, queue admission, eviction, retention, uploads and unmount. HTTP entries show endpoint hosts, trusted byte ranges, connection reuse/setup, response status, first body bytes and completion timing. Waiting for response headers is distinguished from waiting for the body.
+
+Logs include file names/IDs and local paths, but omit credentials, cookies, request/response bodies, URL queries and signed object paths. Diagnostics are disabled by default. `--debug` can additionally enable the filesystem driver's raw protocol messages. These logs report requests reaching this process; operations stalled inside Photos or the Windows driver before a callback cannot appear in the application log.
 
 Reads and writes share one per-mount `--cache-limit` budget. Clean data is evicted in order of use to make room; pending writes and recovery journals are never evicted. A complete file held in one cached range, including a whole-file fetch or batch, or a previously flushed write file, can become writable without another download or allocation. Flushed write contents remain available for subsequent reads until eviction or unmount. Reads still work when the budget is occupied by pending writes, but may not retain new ranges. Clean cache data is removed on unmount.
 

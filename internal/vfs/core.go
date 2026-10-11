@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"io"
 	"log"
@@ -43,6 +44,7 @@ type Options struct {
 	TTL        time.Duration
 	IOTimeout  time.Duration
 	Logger     *log.Logger
+	Trace      *diagnostic.Logger
 }
 type cachedList struct {
 	entries []anyshare.Entry
@@ -69,6 +71,7 @@ type FileSystem struct {
 
 type Node struct {
 	inodeBase
+	traceName string // Initial name, readable before taking the node lock.
 	f         *FileSystem
 	mu        sync.Mutex
 	entry     anyshare.Entry
@@ -118,6 +121,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 		return nil, err
 	}
 	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
+	opts.Trace.Printf(context.Background(), "mount policy: whole-file=%s block=%s read-ahead=%s concurrency=%d disk-budget=%s metadata-TTL=%s I/O-timeout=%s read-only=%t", diagnostic.Size(read.WholeFile), diagnostic.Size(read.BlockSize), diagnostic.Size(read.ReadAhead), read.Concurrency, diagnostic.Size(opts.CacheLimit), opts.TTL, opts.IOTimeout, opts.ReadOnly)
 	if opts.Root != nil {
 		if !opts.Root.Dir {
 			os.Remove(cache)
@@ -133,7 +137,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 func (f *FileSystem) Root() *Node       { return f.root }
 func (f *FileSystem) CachePath() string { return f.cacheDir }
 func (f *FileSystem) makeNode(e anyshare.Entry) *Node {
-	n := &Node{f: f, entry: e, statAt: time.Now()}
+	n := &Node{f: f, entry: e, statAt: time.Now(), traceName: e.Name}
 	if e.Dir {
 		n.mode = 0700
 	} else {
@@ -144,16 +148,20 @@ func (f *FileSystem) makeNode(e anyshare.Entry) *Node {
 }
 func (n *Node) snapshot() anyshare.Entry { n.mu.Lock(); defer n.mu.Unlock(); return n.entry }
 
-func (f *FileSystem) list(ctx context.Context, n *Node, fresh bool) ([]anyshare.Entry, error) {
+func (f *FileSystem) list(ctx context.Context, n *Node, fresh bool) (result []anyshare.Entry, resultErr error) {
+	ctx, finish := f.opts.Trace.Begin(ctx, "list directory %q", n.traceName)
+	defer func() { finish("entries=%d; %s", len(result), diagnostic.Status(resultErr)) }()
 	e := n.snapshot()
 	f.listMu.Lock()
 	hit, ok := f.listCache[e.ID]
 	f.listMu.Unlock()
 	if !fresh && ok && time.Now().Before(hit.expires) {
+		f.opts.Trace.Printf(ctx, "directory cache hit: entries=%d", len(hit.entries))
 		return append([]anyshare.Entry(nil), hit.entries...), nil
 	}
 	var entries []anyshare.Entry
 	var err error
+	f.opts.Trace.Printf(ctx, "directory cache miss; fetching remote listing (forced=%t)", fresh)
 	if n.synthetic {
 		entries, err = f.backend.Roots(ctx)
 	} else {
@@ -187,6 +195,7 @@ func (n *Node) reserveLocked(size int64) error {
 	defer f.budgetMu.Unlock()
 	delta := size - n.charged
 	if delta > 0 && !f.cacheRoomLocked(delta) {
+		f.opts.Trace.Printf(context.Background(), "write cache allocation denied: file=%q requested=%s budget=%s used=%s", n.entry.Name, diagnostic.Size(size), diagnostic.Size(f.opts.CacheLimit), diagnostic.Size(f.cacheBytes))
 		return syscall.ENOSPC
 	}
 	f.cacheBytes += delta
@@ -194,12 +203,16 @@ func (n *Node) reserveLocked(size int64) error {
 	return nil
 }
 
-func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) error {
+func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) (result error) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "prepare write cache file=%q truncate=%t", n.entry.Name, truncate)
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	if n.cache != nil {
+		n.f.opts.Trace.Printf(ctx, "write cache already present; no download")
 		return nil
 	}
 	if !truncate {
 		if file, size := n.f.takeCachedFile(n.entry); file != nil {
+			n.f.opts.Trace.Printf(ctx, "promoted complete clean read cache; reused=%s; no download", diagnostic.Size(size))
 			n.cache, n.cachePath, n.charged = file, file.Name(), size
 			return nil
 		}
@@ -217,6 +230,7 @@ func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) error {
 		return err
 	}
 	if !truncate && size > 0 {
+		n.f.opts.Trace.Printf(ctx, "downloading existing file into write cache: size=%s", diagnostic.Size(size))
 		err = n.f.backend.Download(ctx, n.entry, file)
 	}
 	if err != nil {
@@ -267,8 +281,11 @@ func (n *Node) resizeLocked(size int64) error {
 	return n.journalLocked()
 }
 
-func (n *Node) flushLocked(ctx context.Context) error {
+func (n *Node) flushLocked(ctx context.Context) (result error) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "flush file=%q size=%s", n.entry.Name, diagnostic.Size(n.entry.Size))
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	if !n.dirty {
+		n.f.opts.Trace.Printf(ctx, "file is clean; no upload")
 		return nil
 	}
 	if n.unlinked {
@@ -283,6 +300,7 @@ func (n *Node) flushLocked(ctx context.Context) error {
 		return err
 	}
 	old := n.entry
+	n.f.opts.Trace.Printf(ctx, "uploading pending write: id=%q revision=%q", old.ID, old.Rev)
 	entry, err := n.f.backend.Upload(ctx, anyshare.ParentID(old.ID), old.Name, &old, n.cache, old.Size, old.Modified)
 	if err != nil {
 		n.f.opts.Logger.Printf("uncommitted write retained at %s", n.cachePath)
@@ -294,6 +312,7 @@ func (n *Node) flushLocked(ctx context.Context) error {
 	n.statAt = time.Now()
 	os.Remove(n.cachePath + ".json")
 	n.f.invalidate()
+	n.f.opts.Trace.Printf(ctx, "write published: revision=%q; recovery journal removed", entry.Rev)
 	return nil
 }
 
@@ -304,6 +323,7 @@ func (n *Node) disposeLocked() {
 	n.cache.Close()
 	n.cache = nil
 	if !n.dirty {
+		n.f.opts.Trace.Printf(context.Background(), "write cache released: file=%q clean=true unlinked=%t size=%s", n.entry.Name, n.unlinked, diagnostic.Size(n.charged))
 		os.Remove(n.cachePath + ".json")
 		if !n.unlinked && n.entry.Rev != "" {
 			n.f.retainCachedFile(n.entry, n.cachePath, n.charged)
@@ -315,7 +335,9 @@ func (n *Node) disposeLocked() {
 	n.reserveLocked(0)
 }
 
-func (f *FileSystem) Close() error {
+func (f *FileSystem) Close() (result error) {
+	_, finish := f.opts.Trace.Begin(context.Background(), "close mount cache")
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	dirty := 0
 	f.nodes.Range(func(key, value any) bool {
 		n := key.(*Node)

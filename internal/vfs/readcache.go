@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 )
 
 type cacheKey struct {
@@ -82,7 +83,9 @@ func (f *FileSystem) cacheRoomLocked(size int64) bool {
 			return false
 		}
 		file := oldest.Value.(cachedFile)
+		f.opts.Trace.Printf(context.Background(), "evict clean cache: id=%q revision=%q offset=%d size=%s; making room in shared budget", file.key.id, file.key.rev, file.key.off, diagnostic.Size(file.size))
 		if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			f.opts.Trace.Printf(context.Background(), "clean-cache eviction failed: %s", diagnostic.Status(err))
 			return false
 		}
 		f.detachCachedFileLocked(oldest)
@@ -138,13 +141,14 @@ func (f *FileSystem) clearReadCache() {
 	}
 }
 
-func (f *FileSystem) cachedReadLocked(entry anyshare.Entry, data []byte, off int64, key cacheKey) (int, error, bool) {
+func (f *FileSystem) cachedReadLocked(ctx context.Context, entry anyshare.Entry, data []byte, off int64, key cacheKey) (int, error, bool) {
 	for _, candidate := range []cacheKey{fileKey(entry, -1), key} {
 		element := f.readFiles[candidate]
 		if element == nil {
 			continue
 		}
 		cached := element.Value.(cachedFile)
+		f.opts.Trace.Printf(ctx, "disk cache hit: file=%q offset=%d requested=%s; reading local cache", entry.Name, off, diagnostic.Size(len(data)))
 		file, err := os.Open(cached.path)
 		if err != nil {
 			return 0, err, true
@@ -160,9 +164,11 @@ func (f *FileSystem) cachedReadLocked(entry anyshare.Entry, data []byte, off int
 func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data []byte, off int64, blockSize, fetchSize int64) (int, error) {
 	start := off / blockSize * blockSize
 	key := fileKey(entry, start)
+	f.opts.Trace.Printf(ctx, "check read cache: offset=%d; waiting for cache lock", off)
 	f.budgetMu.Lock()
-	if n, err, ok := f.cachedReadLocked(entry, data, off, key); ok {
+	if n, err, ok := f.cachedReadLocked(ctx, entry, data, off, key); ok {
 		f.budgetMu.Unlock()
+		f.opts.Trace.Printf(ctx, "cache read returned=%s; %s", diagnostic.Size(n), diagnostic.Status(err))
 		return n, err
 	}
 	flight := f.readFlights[key]
@@ -183,6 +189,7 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 			}
 			neighbour := fileKey(entry, next)
 			if f.readFiles[neighbour] != nil || f.readFlights[neighbour] != nil {
+				f.opts.Trace.Printf(ctx, "batch stops at offset=%d: neighbour cached or already fetching", next)
 				break
 			}
 			flight.keys = append(flight.keys, neighbour)
@@ -192,10 +199,14 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 	}
 	f.budgetMu.Unlock()
 	if owner {
+		ctx, finish := f.opts.Trace.Begin(ctx, "fetch file=%q id=%q revision=%q offset=%d length=%s blocks=%d", entry.Name, entry.ID, entry.Rev, start, diagnostic.Size(length), len(flight.keys))
+		defer func() { finish("%s", diagnostic.Status(flight.err)) }()
+		f.opts.Trace.Printf(ctx, "cache miss; waiting for read slot (active=%d limit=%d)", len(f.readSlots), cap(f.readSlots))
 		err := f.acquireRead(ctx)
 		admitted := err == nil
 		var n int
 		if err == nil {
+			f.opts.Trace.Printf(ctx, "read slot acquired; fetching remote bytes %d-%d", start, start+length-1)
 			// Allocate only after admission; queued reads hold no fetch buffer.
 			flight.data = make([]byte, length)
 			n, err = f.backend.ReadAt(ctx, entry, flight.data, start)
@@ -207,10 +218,12 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 			err = io.ErrUnexpectedEOF
 		}
 		flight.err = err
+		f.opts.Trace.Printf(ctx, "remote range finished: received=%s; %s; waiting for cache lock", diagnostic.Size(n), diagnostic.Status(err))
 		f.budgetMu.Lock()
 		if err == nil && f.cacheRoomLocked(int64(n)) {
 			file, createErr := os.CreateTemp(f.cacheDir, "read-*.data")
 			if createErr == nil {
+				f.opts.Trace.Printf(ctx, "retaining range in disk cache: size=%s", diagnostic.Size(n))
 				_, writeErr := file.Write(flight.data)
 				closeErr := file.Close()
 				if writeErr == nil && closeErr == nil {
@@ -220,10 +233,17 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 					for _, key := range flight.keys {
 						f.readFiles[key] = element
 					}
+					f.opts.Trace.Printf(ctx, "cache range retained: used=%s clean=%s", diagnostic.Size(f.cacheBytes), diagnostic.Size(f.readBytes))
 				} else {
+					f.opts.Trace.Printf(ctx, "disk retention failed; range still returned to reader")
 					os.Remove(file.Name())
 				}
 			}
+			if createErr != nil {
+				f.opts.Trace.Printf(ctx, "disk cache file creation failed: %s; returning fetched bytes without retention", diagnostic.Status(createErr))
+			}
+		} else if err == nil {
+			f.opts.Trace.Printf(ctx, "range not retained: shared cache could not free required space; returning fetched bytes")
 		}
 		for _, key := range flight.keys {
 			delete(f.readFlights, key)
@@ -234,9 +254,12 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 			<-f.readSlots
 		}
 	} else {
+		_, finish := f.opts.Trace.Begin(ctx, "wait for shared fetch file=%q offset=%d", entry.Name, flight.off)
 		select {
 		case <-flight.done:
+			finish("%s", diagnostic.Status(flight.err))
 		case <-ctx.Done():
+			finish("%s", diagnostic.Status(ctx.Err()))
 			return 0, ctx.Err()
 		}
 	}
@@ -248,6 +271,7 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 
 func (f *FileSystem) readAt(ctx context.Context, entry anyshare.Entry, data []byte, off, fetchSize int64) (int, error) {
 	if entry.Rev == "" {
+		f.opts.Trace.Printf(ctx, "read cache bypass: server supplied no revision; waiting for read slot")
 		if err := f.acquireRead(ctx); err != nil {
 			return 0, err
 		}
@@ -275,19 +299,25 @@ func (f *FileSystem) readAt(ctx context.Context, entry anyshare.Entry, data []by
 
 // Remote I/O does not hold the node lock, allowing stat and cached reads to
 // proceed while another reader is waiting on the server.
-func (n *Node) readAt(ctx context.Context, data []byte, off int64) (int, error) {
+func (n *Node) readAt(ctx context.Context, data []byte, off int64) (result int, resultErr error) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "read file=%q offset=%d requested=%s", n.traceName, off, diagnostic.Size(len(data)))
+	defer func() { finish("returned=%s; %s", diagnostic.Size(result), diagnostic.Status(resultErr)) }()
+	n.f.opts.Trace.Printf(ctx, "waiting for file lock")
 	n.mu.Lock()
+	n.f.opts.Trace.Printf(ctx, "file lock acquired; size=%s revision=%q local-write-cache=%t", diagnostic.Size(n.entry.Size), n.entry.Rev, n.cache != nil)
 	if off < 0 {
 		n.mu.Unlock()
 		return 0, syscall.EINVAL
 	}
 	if off >= n.entry.Size || len(data) == 0 {
+		n.f.opts.Trace.Printf(ctx, "empty/EOF read; no network request")
 		n.mu.Unlock()
 		return 0, nil
 	}
 	data = data[:min(int64(len(data)), n.entry.Size-off)]
 	entry := n.entry
 	if n.cache != nil {
+		n.f.opts.Trace.Printf(ctx, "read from local write cache")
 		count, err := n.cache.ReadAt(data, off)
 		n.mu.Unlock()
 		if count != len(data) && (err == nil || err == io.EOF) {
@@ -296,17 +326,20 @@ func (n *Node) readAt(ctx context.Context, data []byte, off int64) (int, error) 
 		return count, err
 	}
 	blockSize := n.f.blockSize(entry)
-	if off == n.readEnd && n.readRev == entry.Rev {
+	sequential := off == n.readEnd && n.readRev == entry.Rev
+	if sequential {
 		n.readSize = min(max(blockSize, n.f.opts.Read.ReadAhead), max(blockSize, n.readSize)*2)
 	} else {
 		n.readSize = blockSize
 	}
 	n.readEnd, n.readRev = off+int64(len(data)), entry.Rev
 	fetchSize := n.readSize
+	n.f.opts.Trace.Printf(ctx, "read plan: whole-file=%t sequential=%t base=%s fetch-target=%s; releasing file lock for remote/cache read", blockSize >= entry.Size, sequential, diagnostic.Size(blockSize), diagnostic.Size(fetchSize))
 	n.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, n.f.opts.IOTimeout)
 	defer cancel()
 	count, err := n.f.readAt(ctx, entry, data, off, fetchSize)
+	n.f.opts.Trace.Printf(ctx, "rechecking file state after read; waiting for file lock")
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.cache != nil {

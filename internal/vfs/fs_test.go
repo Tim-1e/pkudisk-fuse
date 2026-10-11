@@ -14,12 +14,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"golang.org/x/sys/unix"
 )
 
@@ -150,7 +152,8 @@ func TestKernelReadCacheAndMemoryMapping(t *testing.T) {
 	probe := &readProbe{memoryBackend: newMemory()}
 	data := bytes.Repeat([]byte("mapped-photo-data"), 4096)
 	seedFile(t, probe.memoryBackend, "photo.jpg", data)
-	point, _ := mountTest(t, probe, Options{Root: &probe.roots[0], CacheLimit: 1 << 20})
+	var output mountLog
+	point, _ := mountTest(t, probe, Options{Root: &probe.roots[0], CacheLimit: 1 << 20, Trace: diagnostic.New(&output)})
 	file, err := os.Open(filepath.Join(point, "photo.jpg"))
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +177,9 @@ func TestKernelReadCacheAndMemoryMapping(t *testing.T) {
 	}
 	if probe.reads.Load() != 1 {
 		t.Fatalf("mounted mmap and reads fetched %d ranges, want one", probe.reads.Load())
+	}
+	if !strings.Contains(output.String(), "START open file=") || !strings.Contains(output.String(), "END read file=") {
+		t.Fatal("mounted reads were not visible in verbose diagnostics")
 	}
 }
 

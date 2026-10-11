@@ -7,15 +7,17 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
 type mountOptions struct {
 	mountpoint, root, cache       string
-	readOnly, debug               bool
+	readOnly, debug, verbose      bool
 	cacheLimit, partSize          int64
 	ttl, timeout, refreshInterval time.Duration
 	read                          vfs.ReadOptions
+	trace                         *diagnostic.Logger
 }
 
 // Use the same byte syntax in all mount size flags, including numeric bytes.

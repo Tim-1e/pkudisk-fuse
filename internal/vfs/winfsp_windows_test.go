@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
 )
@@ -226,6 +228,8 @@ func TestWinFspMountedRoundTrip(t *testing.T) {
 
 func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
 	core, probe := readCacheTest(t, 16<<20)
+	var output mountLog
+	core.opts.Trace = diagnostic.New(&output)
 	picture := image.NewNRGBA(image.Rect(0, 0, 1024, 768))
 	for y := 0; y < 768; y++ {
 		for x := 0; x < 1024; x++ {
@@ -274,6 +278,11 @@ func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
 	}
 	if probe.reads.Load() != 1 {
 		t.Fatalf("5 MiB image decode, random reads, mmap and reopen fetched %d remote ranges, want one", probe.reads.Load())
+	}
+	for _, want := range []string{"WinFsp open path=", "WinFsp read path=", "WinFsp getattr path=", "read plan: whole-file=true", "END read file="} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("native Windows access missing from verbose log: %s", want)
+		}
 	}
 }
 

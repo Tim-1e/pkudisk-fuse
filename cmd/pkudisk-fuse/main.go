@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
@@ -177,8 +179,8 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nSize flags accept bytes or units such as 4MiB and 10GiB. Larger fetches reduce\nround trips but use more bandwidth and memory before the read returns. Set\n--read-whole-file 0 and --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n" + remoteHelp
-		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0"
+		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nSize flags accept bytes or units such as 4MiB and 10GiB. Larger fetches reduce\nround trips but use more bandwidth and memory before the read returns. Set\n--read-whole-file 0 and --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n--verbose explains operations, cache decisions, queue waits and HTTP request\nphases on stderr. START and END lines share an operation number; a START\nwithout END shows an outstanding operation. Logs include paths and file IDs,\nbut omit credentials, request bodies and signed URL paths/queries.\n--debug additionally prints raw filesystem-driver diagnostics.\n\n" + remoteHelp
+		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --verbose 2> mount.log"
 		f := cmd.Flags()
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
@@ -193,6 +195,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")
 		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")
 		f.BoolVar(&mount.debug, "debug", false, "print FUSE protocol diagnostics to stderr")
+		f.BoolVar(&mount.verbose, "verbose", false, "explain mount operations, cache/fetch decisions and HTTP timing on stderr; credentials and signed URLs are omitted")
 	}
 	credentials.add(cmd.Flags())
 	if name == "ls" {
@@ -226,6 +229,11 @@ func newRemoteCommand(name string) *cobra.Command {
 			}
 		}
 		credentials.input, credentials.output = cmd.InOrStdin(), cmd.ErrOrStderr()
+		if name == "mount" && mount.verbose {
+			mount.trace = diagnostic.New(cmd.ErrOrStderr())
+			credentials.trace = mount.trace
+			mount.trace.Printf(cmd.Context(), "mount diagnostics enabled; version=%s OS=%s architecture=%s", installedVersion(), runtime.GOOS, runtime.GOARCH)
+		}
 		credentials.announce = name != "tui"
 		session, server, account, err := authenticate(cmd.Context(), credentials)
 		if err != nil {
@@ -236,6 +244,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		if err != nil {
 			return err
 		}
+		client.SetTrace(mount.trace)
 		switch name {
 		case "ls":
 			selector := "/"

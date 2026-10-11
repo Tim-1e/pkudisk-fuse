@@ -4,6 +4,11 @@ Follow [Go's publishing guidance](https://go.dev/doc/modules/publishing):
 tidy dependencies, test, commit, tag, push the tag, and request the module from a
 proxy. Never move or reuse a published tag; fixes get a new version.
 
+The CLI/TUI is treated as stable within the current minor version. Compatible
+fixes, diagnostics and performance tuning use patch releases (for example,
+v0.3.1). Reserve a minor bump for a substantial new capability or an intentional
+interface change; do not bump it for each improvement to the existing mount.
+
 ## Prepare
 
 1. Add `docs/releases/vX.Y.Z.md` with changes, installation instructions and

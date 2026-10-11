@@ -44,6 +44,10 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	if err != nil || stderr != "" || !strings.Contains(out, "recover") {
 		t.Fatal("empty invocation must show help")
 	}
+	out, stderr, err = testExecute("mount", "--verbose", "--help")
+	if err != nil || stderr != "" || !strings.Contains(out, "--verbose") {
+		t.Fatal("verbose mount help must stay offline and quiet")
+	}
 	out, stderr, err = testExecute("account")
 	if err != nil || stderr != "" || !strings.Contains(out, "Available Commands:") {
 		t.Fatal("account group must show help without reading the account store")

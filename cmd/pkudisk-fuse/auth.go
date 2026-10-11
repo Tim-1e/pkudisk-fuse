@@ -13,10 +13,12 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
 	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 type authFlags struct {
+	trace                                                    *diagnostic.Logger
 	server, account, username, passwordFile, credentialsFile string
 	stdin, noSave                                            bool
 	saveName                                                 string
@@ -215,7 +217,7 @@ func authenticateWith(ctx context.Context, opts authFlags, newSession func(auth.
 	if c.Username == "" || len(c.Password) == 0 || len(c.Password) > 8192 {
 		return nil, "", "", errors.New("username and a password of at most 8192 bytes are required")
 	}
-	options := auth.Options{Server: opts.server, Challenge: func(ctx context.Context, challenge auth.Challenge) (string, error) {
+	options := auth.Options{Server: opts.server, Trace: opts.trace, Challenge: func(ctx context.Context, challenge auth.Challenge) (string, error) {
 		if opts.nonInteractive {
 			return "", fmt.Errorf("%s required; rerun interactively or supply available OTP/SMS codes with --credentials-file", challenge.Kind)
 		}

@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 )
 
 type TokenSource interface {
@@ -20,12 +22,20 @@ type TokenSource interface {
 }
 
 type Client struct {
+	Trace    *diagnostic.Logger
 	base     string
 	tokens   TokenSource
 	api      *http.Client
 	objects  *http.Client
 	PartSize int64
 	PageSize int
+}
+
+// SetTrace is configured before the client is used by a mount.
+func (c *Client) SetTrace(trace *diagnostic.Logger) {
+	c.Trace = trace
+	c.api.Transport = trace.Transport(c.api.Transport, "API")
+	c.objects.Transport = trace.Transport(c.objects.Transport, "object")
 }
 
 func New(base string, tokens TokenSource) (*Client, error) {
@@ -53,6 +63,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 		}
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		c.Trace.Printf(ctx, "API %s %q: acquiring access token", method, strings.SplitN(path, "?", 2)[0])
 		token := c.tokens.AccessToken()
 		req, err := http.NewRequestWithContext(ctx, method, c.base+"/api"+path, bytes.NewReader(data))
 		if err != nil {
@@ -71,6 +82,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 			return nil, readErr
 		}
 		if resp.StatusCode == 401 && attempt == 0 {
+			c.Trace.Printf(ctx, "HTTP 401: refreshing session before one retry")
 			if err := c.tokens.Refresh(ctx, token); err != nil {
 				return nil, fmt.Errorf("refresh session: %w", err)
 			}

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
+
 	"golang.org/x/net/html"
 )
 
@@ -30,6 +32,7 @@ type Challenge struct {
 }
 type ChallengeFunc func(context.Context, Challenge) (string, error)
 type Options struct {
+	Trace       *diagnostic.Logger
 	Server      string
 	IAAA        string
 	Challenge   ChallengeFunc
@@ -60,6 +63,7 @@ func (e *HTTPError) Error() string {
 }
 
 type Session struct {
+	trace       *diagnostic.Logger
 	mu          sync.Mutex
 	base        *url.URL
 	iaaa        *url.URL
@@ -87,9 +91,9 @@ func New(opts Options) (*Session, error) {
 		return nil, err
 	}
 	jar, _ := cookiejar.New(nil)
-	s := &Session{base: base, iaaa: iaaa, challenge: opts.Challenge, onState: opts.OnState, refreshLock: opts.RefreshLock, loadState: opts.LoadState}
+	s := &Session{base: base, iaaa: iaaa, challenge: opts.Challenge, onState: opts.OnState, refreshLock: opts.RefreshLock, loadState: opts.LoadState, trace: opts.Trace}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	s.http = &http.Client{Transport: transport, Jar: jar, Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	s.http = &http.Client{Transport: opts.Trace.Transport(transport, "auth"), Jar: jar, Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 25 {
 			return errors.New("too many authentication redirects")
 		}
@@ -247,11 +251,15 @@ func parsePage(data []byte) (pageProps, []string, error) {
 	return props, scripts, nil
 }
 
-func (s *Session) Login(ctx context.Context, credentials Credentials) error {
+func (s *Session) Login(ctx context.Context, credentials Credentials) (result error) {
+	ctx, finish := s.trace.Begin(ctx, "authentication login")
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	if credentials.Username == "" || len(credentials.Password) == 0 {
 		return errors.New("username and password are required")
 	}
+	s.trace.Printf(ctx, "waiting for authentication lock")
 	s.mu.Lock()
+	s.trace.Printf(ctx, "authentication lock acquired")
 	defer s.mu.Unlock()
 	b, _, err := s.get(ctx, s.base.String()+"/anyshare/oauth2/login?lang=zh-cn&redirect="+url.QueryEscape("/anyshare/"))
 	if err != nil {
@@ -478,15 +486,19 @@ func (s *Session) updateToken() error {
 	return errors.New("login did not issue an AnyShare access token")
 }
 
-func (s *Session) Refresh(ctx context.Context, rejected string) error {
+func (s *Session) Refresh(ctx context.Context, rejected string) (result error) {
+	ctx, finish := s.trace.Begin(ctx, "renew authentication session")
+	defer func() { finish("%s", diagnostic.Status(result)) }()
 	var unlock io.Closer
 	var err error
 	if s.refreshLock != nil {
+		s.trace.Printf(ctx, "waiting for saved-session lock")
 		unlock, err = s.refreshLock(ctx)
 		if err != nil {
 			return fmt.Errorf("lock authentication session: %w", err)
 		}
 		defer unlock.Close()
+		s.trace.Printf(ctx, "saved-session lock acquired")
 	}
 	return s.refresh(ctx, rejected, true)
 }
