@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/localfile"
 )
 
 // Opt-in acceptance uses a new login session and reads only remote metadata and
@@ -19,13 +20,9 @@ func TestLiveSessionRefresh(t *testing.T) {
 	if path == "" {
 		t.Skip("set PKUDISK_TEST_CREDENTIALS to an owner-only credential file for live read-only acceptance")
 	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		t.Fatal("live credentials must be a regular owner-only file")
-	}
-	f, err := os.Open(path)
+	f, err := localfile.OpenPrivate(path, os.O_RDONLY)
 	if err != nil {
-		t.Fatal("cannot open live credential file")
+		t.Fatal("cannot open private live credential file")
 	}
 	b, err := io.ReadAll(io.LimitReader(f, 8193))
 	f.Close()

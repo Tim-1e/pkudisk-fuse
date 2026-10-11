@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -19,14 +20,19 @@ import (
 
 func mountTest(t *testing.T, b Backend, options Options) (string, *FileSystem) {
 	t.Helper()
-	device, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
-	if err != nil {
-		if os.Getenv("PKUDISK_FUSE_REQUIRE_KERNEL") == "1" {
-			t.Fatal(err)
-		}
-		t.Skip("kernel FUSE unavailable:", err)
+	if runtime.GOOS == "darwin" && os.Getenv("PKUDISK_FUSE_REQUIRE_KERNEL") != "1" {
+		t.Skip("set PKUDISK_FUSE_REQUIRE_KERNEL=1 on a Mac with the macFUSE kernel extension enabled")
 	}
-	device.Close()
+	if runtime.GOOS == "linux" {
+		device, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
+		if err != nil {
+			if os.Getenv("PKUDISK_FUSE_REQUIRE_KERNEL") == "1" {
+				t.Fatal(err)
+			}
+			t.Skip("kernel FUSE unavailable:", err)
+		}
+		device.Close()
+	}
 	base := t.TempDir()
 	point := filepath.Join(base, "mount")
 	if err := os.Mkdir(point, 0700); err != nil {

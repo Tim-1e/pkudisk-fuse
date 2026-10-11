@@ -10,7 +10,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,8 +39,6 @@ type WinFsp struct {
 	handles map[uint64]*winHandle
 	next    uint64
 	Ready   chan struct{}
-	uid     atomic.Uint32
-	gid     atomic.Uint32
 }
 
 func NewWinFsp(ctx context.Context, core *FileSystem) *WinFsp {
@@ -52,14 +49,7 @@ func NewWinFsp(ctx context.Context, core *FileSystem) *WinFsp {
 // user's SID. WinFsp documents -1 as the mounting user's UID/GID.
 func WinFspMountOptions() []string { return []string{"-o", "uid=-1,gid=-1"} }
 
-func (w *WinFsp) Init() {
-	// WinFsp maps UID/GID to Windows SIDs. Zero would make mode 0700 owned
-	// by a different account, denying the mounting user access to the root.
-	uid, gid, _ := fuse.Getcontext()
-	w.uid.Store(uid)
-	w.gid.Store(gid)
-	close(w.Ready)
-}
+func (w *WinFsp) Init() { close(w.Ready) }
 
 func (w *WinFsp) operation() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(w.ctx, w.core.opts.IOTimeout)
@@ -223,12 +213,6 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func (w *WinFsp) stat(entry anyshare.Entry, mode uint32) fuse.Stat_t {
-	stat := winStat(entry, mode)
-	stat.Uid, stat.Gid = w.uid.Load(), w.gid.Load()
-	return stat
-}
-
 func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) int {
 	ctx, cancel := w.operation()
 	defer cancel()
@@ -249,7 +233,7 @@ func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) int {
 	if w.core.opts.ReadOnly || node.synthetic {
 		mode &= 0555
 	}
-	*stat = w.stat(node.entry, mode)
+	*stat = winStat(node.entry, mode)
 	return 0
 }
 
@@ -708,7 +692,7 @@ func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bo
 		if w.core.opts.ReadOnly {
 			mode &= 0555
 		}
-		stat := w.stat(entry, mode)
+		stat := winStat(entry, mode)
 		w.remember(path.Join(value, entry.Name), entry)
 		if !fill(entry.Name, &stat, int64(i+1)) {
 			break

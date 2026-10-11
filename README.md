@@ -149,7 +149,7 @@ bin/pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse
 
 Set `--read-only` when a mount must not issue any mutating API request. The default local write-cache limit is 10 GiB; `--cache-limit 0` disables it. `--part-size` sets a preferred upload chunk size (at least 5 MiB), which is adjusted to the server's limits and the file size.
 
-Unmount with `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`). The process also handles Ctrl-C and SIGTERM.
+Ctrl-C unmounts on all platforms. Linux also supports `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`); macOS supports `umount MOUNTPOINT`.
 
 ## Implementation notes
 
