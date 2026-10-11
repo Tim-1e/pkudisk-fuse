@@ -9,12 +9,11 @@ import (
 	"io"
 	"os"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/pflag"
-	"golang.org/x/sys/unix"
 	"pkudisk-fuse/internal/accounts"
 	"pkudisk-fuse/internal/auth"
+	"pkudisk-fuse/internal/localfile"
 )
 
 type authFlags struct {
@@ -58,20 +57,11 @@ func (f authFlags) validate() error {
 }
 
 func privateFile(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	file, err := localfile.OpenPrivate(localfile.ExpandPath(path), os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || !ok || st.Uid != uint32(os.Getuid()) {
-		return nil, errors.New("credential file must be a regular owner-only file (chmod 600)")
-	}
 	b, err := io.ReadAll(io.LimitReader(file, 8193))
 	if err != nil {
 		return nil, err

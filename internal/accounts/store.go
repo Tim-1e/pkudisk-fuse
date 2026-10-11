@@ -12,13 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
-	"golang.org/x/sys/unix"
 	"pkudisk-fuse/internal/auth"
+	"pkudisk-fuse/internal/localfile"
 )
 
 var (
@@ -52,7 +50,7 @@ func (c Config) Find(name string) (Account, bool) {
 type Store struct{ Path string }
 
 func Default() (*Store, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := localfile.ConfigDir()
 	if err != nil {
 		return nil, err
 	}
@@ -84,59 +82,18 @@ func validate(c Config) error {
 	return nil
 }
 
-func private(info os.FileInfo, directory bool) error {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != uint32(os.Getuid()) || info.Mode().Perm()&0077 != 0 ||
-		(directory && !info.IsDir()) || (!directory && !info.Mode().IsRegular()) {
-		return errors.New("account storage must be owned by the current user with directory mode 0700 and file mode 0600")
-	}
-	return nil
-}
-
-func openPrivate(path string, flags int) (*os.File, error) {
-	fd, err := unix.Open(path, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	info, err := f.Stat()
-	if err == nil {
-		err = private(info, false)
-	}
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
-}
-
 func (s *Store) lock(write bool) (*os.File, error) {
 	dir := filepath.Dir(s.Path)
+	var err error
 	if write {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return nil, err
-		}
+		err = localfile.EnsurePrivateDir(dir)
+	} else {
+		err = localfile.CheckPrivateDir(dir)
 	}
-	info, err := os.Lstat(dir)
 	if err != nil {
 		return nil, err
 	}
-	if err = private(info, true); err != nil {
-		return nil, err
-	}
-	f, err := openPrivate(s.Path+".lock", unix.O_RDWR|unix.O_CREAT)
-	if err != nil {
-		return nil, err
-	}
-	mode := unix.LOCK_SH
-	if write {
-		mode = unix.LOCK_EX
-	}
-	if err = unix.Flock(int(f.Fd()), mode); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
+	return localfile.Lock(context.Background(), s.Path+".lock", write)
 }
 
 // LockSession serializes refresh-token rotation across processes. The lock is
@@ -147,44 +104,15 @@ func (s *Store) LockSession(ctx context.Context) (io.Closer, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	dir := filepath.Dir(s.Path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := localfile.EnsurePrivateDir(filepath.Dir(s.Path)); err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return nil, err
-	}
-	if err = private(info, true); err != nil {
-		return nil, err
-	}
-	f, err := openPrivate(s.Path+".session.lock", unix.O_RDWR|unix.O_CREAT)
-	if err != nil {
-		return nil, err
-	}
-	for {
-		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			return f, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			f.Close()
-			return nil, err
-		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			f.Close()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
+	return localfile.Lock(ctx, s.Path+".session.lock", true)
 }
 
 func (s *Store) read() (Config, error) {
 	empty := Config{Version: 1, Accounts: []Account{}}
-	f, err := openPrivate(s.Path, unix.O_RDONLY)
+	f, err := localfile.OpenPrivate(s.Path, os.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
 	}
@@ -243,7 +171,7 @@ func (s *Store) update(change func(*Config) error) error {
 	if len(b) > 1<<20 {
 		return errors.New("account store exceeds 1 MiB")
 	}
-	f, err := os.CreateTemp(filepath.Dir(s.Path), ".accounts-*")
+	f, err := localfile.CreateTemp(filepath.Dir(s.Path), ".accounts-*")
 	if err != nil {
 		return err
 	}
@@ -258,15 +186,10 @@ func (s *Store) update(change func(*Config) error) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), s.Path); err != nil {
+	if err = localfile.Install(f.Name(), s.Path, true); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(s.Path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return localfile.SyncDir(filepath.Dir(s.Path))
 }
 
 func (s *Store) Put(account Account, makeDefault, replace bool) error {

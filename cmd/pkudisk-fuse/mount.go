@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package main
 
 import (
@@ -14,18 +16,12 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"pkudisk-fuse/internal/anyshare"
 	"pkudisk-fuse/internal/auth"
+	"pkudisk-fuse/internal/localfile"
 	"pkudisk-fuse/internal/vfs"
 )
 
-type mountOptions struct {
-	mountpoint, root, cache       string
-	readOnly, debug               bool
-	cacheLimit, partSize          int64
-	ttl, timeout, refreshInterval time.Duration
-}
-
 func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth.Session, opts mountOptions, output io.Writer) error {
-	root, cache := opts.root, opts.cache
+	root, cache := opts.root, localfile.ExpandPath(opts.cache)
 	readOnly, debug := opts.readOnly, opts.debug
 	cacheLimit, partSize := opts.cacheLimit, opts.partSize
 	ttl, timeout, refreshInterval := opts.ttl, opts.timeout, opts.refreshInterval
@@ -45,7 +41,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 			return err
 		}
 	}
-	point, err := filepath.Abs(opts.mountpoint)
+	point, err := filepath.Abs(localfile.ExpandPath(opts.mountpoint))
 	if err != nil {
 		return err
 	}

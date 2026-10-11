@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/localfile"
 )
 
 type Backend interface {
@@ -42,6 +43,7 @@ type Result struct {
 type Service struct{ Backend Backend }
 
 func (s Service) Upload(ctx context.Context, local, remote string, overwrite bool, observe Observer) (Result, error) {
+	local = localfile.ExpandPath(local)
 	result := Result{Local: local, Remote: remote}
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -132,6 +134,7 @@ func (s Service) Download(ctx context.Context, remote, local string, overwrite b
 	return result, err
 }
 func (s Service) DownloadEntry(ctx context.Context, entry anyshare.Entry, local string, overwrite bool, observe Observer) (Result, error) {
+	local = localfile.ExpandPath(local)
 	result := Result{Entry: entry, Local: local, Remote: entry.ID}
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -143,9 +146,15 @@ func (s Service) DownloadEntry(ctx context.Context, entry anyshare.Entry, local 
 		return result, errors.New("invalid remote file name or size")
 	}
 	if local == "" {
+		if !localfile.ValidName(entry.Name) {
+			return result, errors.New("remote name cannot be used as a local filename on this platform; provide an explicit local file path")
+		}
 		local = entry.Name
 	}
 	if info, err := os.Stat(local); err == nil && info.IsDir() {
+		if !localfile.ValidName(entry.Name) {
+			return result, errors.New("remote name cannot be used as a local filename on this platform; provide an explicit local file path")
+		}
 		local = filepath.Join(local, entry.Name)
 	}
 	result.Local = local
@@ -183,11 +192,7 @@ func (s Service) DownloadEntry(ctx context.Context, entry anyshare.Entry, local 
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
-	if overwrite {
-		err = os.Rename(file.Name(), local)
-	} else {
-		err = os.Link(file.Name(), local)
-	}
+	err = localfile.Install(file.Name(), local, overwrite)
 	if err != nil {
 		return result, err
 	}

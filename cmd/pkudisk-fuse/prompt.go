@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -47,13 +46,16 @@ func (p *credentialPrompt) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (p *credentialPrompt) View() tea.View { return tea.NewView(p.input.View()) }
 func ttyInput(ctx context.Context, label string, hidden bool) ([]byte, error) {
-	file, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	input, output, err := openTerminal()
 	if err != nil {
 		return nil, errors.New("interactive terminal unavailable; provide --username and --password-file")
 	}
-	defer file.Close()
+	defer input.Close()
+	if output != input {
+		defer output.Close()
+	}
 	prompt := newCredentialPrompt(label, hidden)
-	_, err = tea.NewProgram(prompt, tea.WithContext(ctx), tea.WithInput(file), tea.WithOutput(file)).Run()
+	_, err = tea.NewProgram(prompt, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output)).Run()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}

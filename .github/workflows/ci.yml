@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Enable Linux FUSE tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3
+          if [ ! -e /dev/fuse ]; then sudo mknod /dev/fuse c 10 229; fi
+          sudo chmod 666 /dev/fuse
+          echo "PKUDISK_FUSE_REQUIRE_KERNEL=1" >> "$GITHUB_ENV"
+      - name: Install WinFsp for native mount tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msiPath = Join-Path $env:RUNNER_TEMP 'winfsp.msi'
+          Invoke-WebRequest 'https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi' -OutFile $msiPath
+          $process = Start-Process msiexec.exe -ArgumentList '/i', "`"$msiPath`"", '/qn', '/norestart', 'ADDLOCAL=ALL' -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) { throw "WinFsp installer exit code $($process.ExitCode)" }
+          'CGO_ENABLED=0' >> $env:GITHUB_ENV
+          'PKUDISK_FUSE_REQUIRE_KERNEL=1' >> $env:GITHUB_ENV
+      - name: Check formatting
+        shell: bash
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detector
+        if: runner.os != 'Windows'
+        run: go test -race -count=1 ./...
+      - name: Test native Windows permissions and WinFsp
+        if: runner.os == 'Windows'
+        run: go test -count=1 -v ./...
+      - name: Build
+        run: go build -trimpath ./cmd/pkudisk-fuse
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -trimpath ./cmd/pkudisk-fuse

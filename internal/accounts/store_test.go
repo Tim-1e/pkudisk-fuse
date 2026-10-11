@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"pkudisk-fuse/internal/auth"
+	"pkudisk-fuse/internal/localfile"
 )
 
 func testStore(t *testing.T) *Store {
@@ -45,9 +47,14 @@ func TestStorePersistsCredentialsDefaultAndRotatedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("account store mode = %o, want 600", info.Mode().Perm())
 	}
+	file, err := localfile.OpenPrivate(s.Path, os.O_RDONLY)
+	if err != nil {
+		t.Fatal("saved account permissions:", err)
+	}
+	file.Close()
 }
 
 func TestStoreRejectsDuplicateAndRemovesDefault(t *testing.T) {
@@ -74,6 +81,9 @@ func TestStoreRejectsDuplicateAndRemovesDefault(t *testing.T) {
 }
 
 func TestStoreRejectsUnsafeDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode check; Windows ACL rejection is covered in localfile")
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0755); err != nil {
 		t.Fatal(err)

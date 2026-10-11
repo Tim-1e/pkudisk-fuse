@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/localfile"
 	"pkudisk-fuse/internal/vfs"
 )
 
@@ -86,7 +87,7 @@ const remoteHelp = `Remote paths:
 func newRootCommand(in io.Reader, out, errOut io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use: "pkudisk-fuse", Short: "Browse, transfer, and mount PKU NetDisk files",
-		Long: `Browse PKU NetDisk, transfer files, or mount it as a Linux filesystem.
+		Long: `Browse PKU NetDisk, transfer files, or mount it on Linux, macOS or Windows.
 
 Start with "account add" to save a PKU campus login, then "root" to list
 accessible document libraries. "ls" lists remote folders; "tui" opens a file
@@ -181,9 +182,9 @@ func newRemoteCommand(name string) *cobra.Command {
 	case "mount":
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
-		cmd.Short = "Mount remote libraries or a selected folder as a Linux filesystem"
-		cmd.Long = "Mount PKU NetDisk in an existing empty local directory. The process stays\nin the foreground; Ctrl-C unmounts. Linux FUSE and fusermount3/fusermount are\nrequired. Omit --root to expose all accessible libraries.\n\nWrites use a private local cache and are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
-		cmd.Example = "  mkdir -p ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk --account work --read-only\n  pkudisk-fuse mount ~/PKUNetDisk --root '/My library/Reports'"
+		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
+		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nWrites use a private local cache and are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
+		cmd.Example = mountPlatformExample
 		f := cmd.Flags()
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
@@ -220,6 +221,11 @@ func newRemoteCommand(name string) *cobra.Command {
 		}
 		if name == "tui" && !interactiveIO(cmd.InOrStdin(), cmd.OutOrStdout()) {
 			return errors.New("tui requires an interactive terminal; use ls, upload, or download for non-interactive operations")
+		}
+		if name == "mount" {
+			if err := checkMountSupport(); err != nil {
+				return err
+			}
 		}
 		credentials.input, credentials.output = cmd.InOrStdin(), cmd.ErrOrStderr()
 		credentials.announce = name != "tui"
@@ -264,7 +270,7 @@ func newRemoteCommand(name string) *cobra.Command {
 }
 
 func defaultCache() string {
-	dir, err := os.UserCacheDir()
+	dir, err := localfile.CacheDir()
 	if err != nil {
 		return ""
 	}
@@ -330,6 +336,7 @@ reported explicitly; JSON uses []. Exit codes: 0 success, 1 scan failure,
 2 invalid arguments.`,
 		Example: "  pkudisk-fuse recover\n  pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse --json\n  cp /cache/mount-EXAMPLE/data-EXAMPLE ~/recovered-report.pdf\n  pkudisk-fuse upload ~/recovered-report.pdf '/My library/recovered-report.pdf'",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			cache = localfile.ExpandPath(cache)
 			records, err := vfs.RecoveryFiles(cache)
 			if err != nil {
 				// A missing cache parent is an empty result. A file disappearing

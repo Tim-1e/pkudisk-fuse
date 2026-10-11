@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/localfile"
 	"pkudisk-fuse/internal/transfer"
 )
 
@@ -590,16 +590,4 @@ func tuiText(value string) string {
 		return r
 	}, value)
 }
-func expandTUIPath(value string) string {
-	if value != "~" && !strings.HasPrefix(value, "~/") {
-		return value
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return value
-	}
-	if value == "~" {
-		return home
-	}
-	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
-}
+func expandTUIPath(value string) string { return localfile.ExpandPath(value) }

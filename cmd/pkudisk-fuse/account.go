@@ -9,13 +9,22 @@ import (
 
 	"github.com/spf13/cobra"
 	"pkudisk-fuse/internal/accounts"
+	"pkudisk-fuse/internal/localfile"
 )
+
+const accountStorageHelp = `Storage defaults:
+  Linux:   ~/.config/pkudisk-fuse/accounts.json
+  macOS:   ~/Library/Application Support/pkudisk-fuse/accounts.json
+  Windows: %APPDATA%\pkudisk-fuse\accounts.json
+XDG_CONFIG_HOME overrides the configuration parent on all platforms.
+Unix uses file mode 0600 and directory mode 0700. Windows uses a private ACL
+granting access only to the current user and SYSTEM.`
 
 func newAccountCommand() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{Use: "account", Short: "Save logins, list accounts, and choose the default",
 		Long: `Manage PKU campus logins saved in the user configuration directory.
-Accounts include a password and renewable session in an owner-only 0600 file.
+Accounts include a password and renewable session in a private local file.
 The first account becomes the default. Remote commands use that default, or
 --account NAME. Omit a subcommand to list accounts. No secrets are displayed.
 
@@ -28,7 +37,7 @@ default selects one; remove deletes its saved credentials (not remote files).`,
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output account summaries as a JSON array without passwords or tokens")
 	var listJSON bool
 	list := &cobra.Command{Use: "list", Short: "List saved accounts and mark the default", Args: cobra.NoArgs,
-		Long:    "List saved account names, usernames, servers, and the default marker.\nPasswords and tokens are excluded from both text and JSON. No network access\nor login is needed. The account store follows XDG_CONFIG_HOME, normally\n~/.config/pkudisk-fuse/accounts.json.",
+		Long:    "List saved account names, usernames, servers, and the default marker.\nPasswords and tokens are excluded from both text and JSON. No network access\nor login is needed.\n\n" + accountStorageHelp,
 		Example: "  pkudisk-fuse account list\n  pkudisk-fuse account list --json",
 		RunE:    func(cmd *cobra.Command, _ []string) error { return listAccounts(cmd.OutOrStdout(), listJSON) },
 	}
@@ -51,10 +60,8 @@ Credentials:
   JSON credentials cannot be combined with other credential flags.
   --non-interactive fails if credentials or required verification are missing.
 
-Storage: $XDG_CONFIG_HOME/pkudisk-fuse/accounts.json, normally
-~/.config/pkudisk-fuse/accounts.json (file 0600, directory 0700).
 Results/status go to stderr. Exit codes: 0 success, 1 login/save failure,
-2 invalid arguments.`,
+2 invalid arguments.` + "\n\n" + accountStorageHelp + "\nCredential files must use " + localfile.PermissionsHelp + ".",
 		Example: "  pkudisk-fuse account add work\n  pkudisk-fuse account add --username YOUR-ID --password-file ~/.config/pkudisk-fuse/password --name work\n  pkudisk-fuse account add work --replace --default",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.validate(); err != nil {
