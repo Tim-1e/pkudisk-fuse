@@ -270,12 +270,18 @@ func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWinFspPhotoMmapClient$")
 	command.Env = append(os.Environ(), "PKUDISK_TEST_MMAP="+name, fmt.Sprintf("PKUDISK_TEST_MMAP_HASH=%x", sha256.Sum256(data)))
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("Windows mmap client: %v\n%s", err, output)
+		t.Fatalf("Windows mmap client: %v (context: %v)\n%s", err, ctx.Err(), output)
 	}
+	cancel()
+	// Go test-process startup and CLR startup need separate deadlines; sharing
+	// one makes a healthy GDI+ decode inherit the mmap helper's elapsed time.
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	command = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Add-Type -AssemblyName System.Drawing; $image = [System.Drawing.Image]::FromFile($env:PKUDISK_TEST_PHOTO); try { if ($image.Width -ne 1024 -or $image.Height -ne 768) { throw 'incorrect image dimensions' }; $null = ([System.Drawing.Bitmap]$image).GetPixel(511, 383) } finally { $image.Dispose() }`)
 	command.Env = append(os.Environ(), "PKUDISK_TEST_PHOTO="+name)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("Windows GDI+ image decoder: %v\n%s", err, output)
+	if commandOutput, err := command.CombinedOutput(); err != nil {
+		lines := strings.Split(output.String(), "\n")
+		t.Fatalf("Windows GDI+ image decoder: %v (context: %v)\n%s\nMount trace tail:\n%s", err, ctx.Err(), commandOutput, strings.Join(lines[max(0, len(lines)-60):], "\n"))
 	}
 	if probe.reads.Load() != 1 {
 		t.Fatalf("5 MiB image decode, random reads, mmap and reopen fetched %d remote ranges, want one", probe.reads.Load())
