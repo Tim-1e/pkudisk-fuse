@@ -21,29 +21,9 @@ type Handle struct {
 
 func (h *Handle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	n := h.node
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if off < 0 {
-		return nil, syscall.EINVAL
-	}
-	if off >= n.entry.Size {
-		return fuse.ReadResultData(nil), 0
-	}
-	dest = dest[:min(int64(len(dest)), n.entry.Size-off)]
-	var count int
-	var err error
-	if n.cache != nil {
-		count, err = n.cache.ReadAt(dest, off)
-	} else {
-		ctx, cancel := context.WithTimeout(ctx, n.f.opts.IOTimeout)
-		defer cancel()
-		count, err = n.f.backend.ReadAt(ctx, n.entry, dest, off)
-	}
+	count, err := n.readAt(ctx, dest, off)
 	if err != nil && err != io.EOF {
 		return nil, n.failure("read", err)
-	}
-	if int64(count) != int64(len(dest)) {
-		return nil, syscall.EIO
 	}
 	return fuse.ReadResultData(dest[:count]), 0
 }

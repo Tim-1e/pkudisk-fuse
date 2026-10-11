@@ -4,10 +4,14 @@ package vfs
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -16,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
+	"golang.org/x/sys/unix"
 )
 
 func mountTest(t *testing.T, b Backend, options Options) (string, *FileSystem) {
@@ -139,6 +144,61 @@ func TestKernelRandomWriteTruncateAndFsync(t *testing.T) {
 		t.Fatal(err)
 	}
 	readFile(t, path, []byte("ab"))
+}
+
+func TestKernelReadCacheAndMemoryMapping(t *testing.T) {
+	probe := &readProbe{memoryBackend: newMemory()}
+	data := bytes.Repeat([]byte("mapped-photo-data"), 4096)
+	seedFile(t, probe.memoryBackend, "photo.jpg", data)
+	point, _ := mountTest(t, probe, Options{Root: &probe.roots[0], CacheLimit: 1 << 20})
+	file, err := os.Open(filepath.Join(point, "photo.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	// The mmap client must run outside the Go FUSE server process: a page fault
+	// during stop-the-world GC can otherwise wait on its own paused server.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMmapClient$")
+	command.Env = append(os.Environ(), "PKUDISK_TEST_MMAP="+file.Name(), fmt.Sprintf("PKUDISK_TEST_MMAP_HASH=%x", sha256.Sum256(data)))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("mmap client: %v\n%s", err, output)
+	}
+	for i := 0; i < 30; i++ {
+		got := make([]byte, 32)
+		off := int64(i * 512)
+		if _, err := file.ReadAt(got, off); err != nil || !bytes.Equal(got, data[off:off+32]) {
+			t.Fatal("cached read failed", err)
+		}
+	}
+	if probe.reads.Load() != 1 {
+		t.Fatalf("mounted mmap and reads fetched %d ranges, want one", probe.reads.Load())
+	}
+}
+
+func TestMmapClient(t *testing.T) {
+	path := os.Getenv("PKUDISK_TEST_MMAP")
+	if path == "" {
+		t.Skip("mmap client helper")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped, err := unix.Mmap(int(file.Fd()), 0, int(stat.Size()), unix.PROT_READ, unix.MAP_SHARED)
+	if err != nil {
+		t.Fatal("FUSE mmap failed", err)
+	}
+	defer unix.Munmap(mapped)
+	if fmt.Sprintf("%x", sha256.Sum256(mapped)) != os.Getenv("PKUDISK_TEST_MMAP_HASH") {
+		t.Fatal("mapped bytes differ")
+	}
 }
 
 func TestKernelAppendConcurrentHandles(t *testing.T) {

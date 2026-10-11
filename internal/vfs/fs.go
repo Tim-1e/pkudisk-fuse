@@ -192,5 +192,5 @@ func (n *Node) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, s
 		}
 	}
 	n.refs++
-	return &Handle{node: n, writable: writable, append: flags&syscall.O_APPEND != 0}, fuse.FOPEN_DIRECT_IO, 0
+	return &Handle{node: n, writable: writable, append: flags&syscall.O_APPEND != 0}, 0, 0
 }

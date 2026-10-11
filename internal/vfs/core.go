@@ -1,8 +1,9 @@
-// Package vfs shares remote namespace, cached writes and recovery between
+// Package vfs shares remote namespace, cached reads/writes and recovery between
 // go-fuse on Unix and WinFsp on Windows.
 package vfs
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -48,16 +49,19 @@ type cachedList struct {
 }
 
 type FileSystem struct {
-	backend    Backend
-	opts       Options
-	cacheDir   string
-	opMu       sync.Mutex
-	listMu     sync.Mutex
-	listCache  map[string]cachedList
-	budgetMu   sync.Mutex
-	cacheBytes int64
-	nodes      sync.Map
-	root       *Node
+	backend     Backend
+	opts        Options
+	cacheDir    string
+	opMu        sync.Mutex
+	listMu      sync.Mutex
+	listCache   map[string]cachedList
+	budgetMu    sync.Mutex
+	cacheBytes  int64
+	readFiles   map[cacheKey]*list.Element
+	readLRU     list.List
+	readFlights map[cacheKey]*readFlight
+	nodes       sync.Map
+	root        *Node
 }
 
 type Node struct {
@@ -99,7 +103,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}}
+	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight)}
 	if opts.Root != nil {
 		if !opts.Root.Dir {
 			os.Remove(cache)
@@ -168,7 +172,7 @@ func (n *Node) reserveLocked(size int64) error {
 	f.budgetMu.Lock()
 	defer f.budgetMu.Unlock()
 	delta := size - n.charged
-	if delta > 0 && f.opts.CacheLimit > 0 && delta > f.opts.CacheLimit-f.cacheBytes {
+	if delta > 0 && !f.cacheRoomLocked(delta) {
 		return syscall.ENOSPC
 	}
 	f.cacheBytes += delta
@@ -179,6 +183,12 @@ func (n *Node) reserveLocked(size int64) error {
 func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) error {
 	if n.cache != nil {
 		return nil
+	}
+	if !truncate {
+		if file, size := n.f.takeCachedFile(n.entry); file != nil {
+			n.cache, n.cachePath, n.charged = file, file.Name(), size
+			return nil
+		}
 	}
 	size := n.entry.Size
 	if truncate {
@@ -280,8 +290,13 @@ func (n *Node) disposeLocked() {
 	n.cache.Close()
 	n.cache = nil
 	if !n.dirty {
-		os.Remove(n.cachePath)
 		os.Remove(n.cachePath + ".json")
+		if !n.unlinked && n.entry.Rev != "" {
+			n.f.retainCachedFile(n.entry, n.cachePath, n.charged)
+			n.charged = 0 // The clean-cache LRU now owns this allocation.
+			return
+		}
+		os.Remove(n.cachePath)
 	}
 	n.reserveLocked(0)
 }
@@ -298,6 +313,7 @@ func (f *FileSystem) Close() error {
 		n.mu.Unlock()
 		return true
 	})
+	f.clearReadCache()
 	os.Remove(f.cacheDir)
 	if dirty > 0 {
 		return fmtErrorRecovery(dirty, f.cacheDir)

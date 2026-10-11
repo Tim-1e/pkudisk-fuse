@@ -286,30 +286,12 @@ func (w *WinFsp) Read(_ string, data []byte, off int64, fh uint64) int {
 	if handle == nil {
 		return -fuse.EBADF
 	}
-	if off < 0 {
-		return -fuse.EINVAL
-	}
 	node := handle.node
-	node.mu.Lock()
-	defer node.mu.Unlock()
-	if off >= node.entry.Size {
-		return 0
-	}
-	data = data[:min(int64(len(data)), node.entry.Size-off)]
-	var n int
-	var err error
-	if node.cache != nil {
-		n, err = node.cache.ReadAt(data, off)
-	} else {
-		ctx, cancel := w.operation()
-		defer cancel()
-		n, err = w.core.backend.ReadAt(ctx, node.entry, data, off)
-	}
+	ctx, cancel := w.operation()
+	defer cancel()
+	n, err := node.readAt(ctx, data, off)
 	if err != nil && err != io.EOF {
 		return w.failure("read", err)
-	}
-	if n != len(data) {
-		return -fuse.EIO
 	}
 	return n
 }

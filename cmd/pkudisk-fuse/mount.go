@@ -72,7 +72,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 		filesystem.Close()
 		return fmt.Errorf("FUSE mount: %w", err)
 	}
-	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; write cache %s. Ctrl-C unmounts.\n", point, filesystem.CachePath())
+	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; cache %s. Ctrl-C unmounts.\n", point, filesystem.CachePath())
 	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
 	maintenanceDone := make(chan struct{})
 	maintenanceFailed := make(chan error, 1)

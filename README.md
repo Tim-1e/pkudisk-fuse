@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use `@v0.1.0` instead of `@latest` to select this release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.2.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -162,7 +162,11 @@ PKUDISK_TEST_CREDENTIALS="$HOME/.config/pkudisk-fuse/credentials.json" \
 
 ## File behavior
 
-Reads use byte ranges and do not download a whole large file. New files, overwrites, random writes, truncation, append, mkdir, unlink, rmdir, rename, and same-library moves are supported. Existing-file writes are compared with the remote revision before upload; a concurrent edit returns `EBUSY` and leaves the local write cache for recovery.
+Mount reads fetch and retain 4 MiB ranges in a private disk cache. Small files fit in one range; large files are cached only as their ranges are read. Repeated reads, seeks and reopening the same revision reuse those bytes. Concurrent readers share a fetch, while metadata queries and warm reads can proceed independently of network I/O. Memory-mapped reads are supported on Linux, macOS and Windows.
+
+Reads and writes share one per-mount `--cache-limit` budget. Clean data is evicted in order of use to make room; pending writes and recovery journals are never evicted. A cached file fitting in one range, or a previously flushed write file, can become writable without another download or allocation. Flushed write contents remain available for subsequent reads until eviction or unmount. Reads still work when the budget is occupied by pending writes, but may not retain new ranges. Clean cache data is removed on unmount.
+
+New files, overwrites, random writes, truncation, append, mkdir, unlink, rmdir, rename, and same-library moves are supported. Existing-file writes are compared with the remote revision before upload; a concurrent edit returns `EBUSY` and leaves the local write cache for recovery.
 
 Writes are held in a private `0700` cache and published on `fsync`/close. A failed upload is never acknowledged as successful. The journal and cached data remain available under `--cache-dir`; inspect them with:
 
@@ -172,7 +176,7 @@ bin/pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse
 
 `recover` lists retained local contents and their recorded remote names/IDs, sizes, revisions, and update times. It runs offline and does not upload, delete, or automatically restore anything. Stop the affected mount, copy needed cached files to a permanent location, then use `upload` with a chosen destination. `recover --help` includes a complete example; `recover --json` returns `[]` when no records exist.
 
-Set `--read-only` when a mount must not issue any mutating API request. The default local write-cache limit is 10 GiB; `--cache-limit 0` disables it. `--part-size` sets a preferred upload chunk size (at least 5 MiB), which is adjusted to the server's limits and the file size.
+Set `--read-only` when a mount must not issue any mutating API request. The default shared disk-cache limit is 10 GiB; `--cache-limit 0` disables it. This limit does not cap the size of files that can be read. `--part-size` sets a preferred upload chunk size (at least 5 MiB), which is adjusted to the server's limits and the file size.
 
 Ctrl-C unmounts on all platforms. Linux also supports `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`); macOS supports `umount MOUNTPOINT`.
 

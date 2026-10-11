@@ -140,7 +140,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 		return err
 	case <-adapter.Ready:
 	}
-	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; write cache %s. Ctrl-C unmounts.\n", point, core.CachePath())
+	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; cache %s. Ctrl-C unmounts.\n", point, core.CachePath())
 	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
 	maintenanceDone := make(chan struct{})
 	maintenanceFailed := make(chan error, 1)

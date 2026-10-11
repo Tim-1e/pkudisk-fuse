@@ -177,12 +177,12 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nWrites use a private local cache and are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
+		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nReads reuse cached ranges; reads and writes share the --cache-limit budget.\nClean data is evicted first. Writes are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
 		cmd.Example = mountPlatformExample
 		f := cmd.Flags()
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
-		f.Int64Var(&mount.cacheLimit, "cache-limit", 10<<30, "maximum cached bytes; 0 disables the limit")
+		f.Int64Var(&mount.cacheLimit, "cache-limit", 10<<30, "shared read/write cache limit in bytes; clean data is evicted first; 0 disables the limit")
 		f.Int64Var(&mount.partSize, "part-size", 16<<20, "preferred upload part size in bytes, at least 5242880 (5 MiB); adjusted to server limits")
 		f.DurationVar(&mount.ttl, "cache-ttl", 2*time.Second, "directory and attribute cache lifetime")
 		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")

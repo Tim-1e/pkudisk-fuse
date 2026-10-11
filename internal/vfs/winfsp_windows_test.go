@@ -3,9 +3,15 @@ package vfs
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -117,8 +123,8 @@ func TestWinFspRenameOpenFileAndRevisionConflict(t *testing.T) {
 	adapter.Release("", handle)
 }
 
-func TestWinFspMountedRoundTrip(t *testing.T) {
-	adapter, _ := testWinFsp(t, 0)
+func mountWinFspTest(t *testing.T, adapter *WinFsp) string {
+	t.Helper()
 	mask, err := windows.GetLogicalDrives()
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +185,12 @@ func TestWinFspMountedRoundTrip(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	return root
+}
+
+func TestWinFspMountedRoundTrip(t *testing.T) {
+	adapter, _ := testWinFsp(t, 0)
+	root := mountWinFspTest(t, adapter)
 	dir := filepath.Join(root, "目录")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -209,5 +221,92 @@ func TestWinFspMountedRoundTrip(t *testing.T) {
 	}
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
+	core, probe := readCacheTest(t, 16<<20)
+	picture := image.NewNRGBA(image.Rect(0, 0, 1024, 768))
+	for y := 0; y < 768; y++ {
+		for x := 0; x < 1024; x++ {
+			picture.SetNRGBA(x, y, color.NRGBA{R: byte(x*17 + y*11), G: byte(x*7 + y*19), B: byte(x*31 + y*3), A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, picture, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	data := encoded.Bytes()
+	// JPEG decoders accept padding after the end marker. Match the reported
+	// 5 MiB file size while file mapping exercises both cached ranges.
+	data = append(data, make([]byte, (5<<20)-len(data))...)
+	seedFile(t, probe.memoryBackend, "照片.jpg", data)
+	adapter := NewWinFsp(context.Background(), core)
+	root := mountWinFspTest(t, adapter)
+	name := filepath.Join(root, "照片.jpg")
+	file, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	decoded, err := jpeg.Decode(file)
+	if err != nil || decoded.Bounds() != picture.Bounds() {
+		t.Fatal("native mounted JPEG decode failed", err)
+	}
+	for i := 0; i < 100; i++ {
+		off := int64((i * 1193) % (len(data) - 32))
+		got := make([]byte, 32)
+		if _, err := file.ReadAt(got, off); err != nil || !bytes.Equal(got, data[off:off+32]) {
+			t.Fatal("decoder-style random read failed", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWinFspPhotoMmapClient$")
+	command.Env = append(os.Environ(), "PKUDISK_TEST_MMAP="+name, fmt.Sprintf("PKUDISK_TEST_MMAP_HASH=%x", sha256.Sum256(data)))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Windows mmap client: %v\n%s", err, output)
+	}
+	command = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `Add-Type -AssemblyName System.Drawing; $image = [System.Drawing.Image]::FromFile($env:PKUDISK_TEST_PHOTO); try { if ($image.Width -ne 1024 -or $image.Height -ne 768) { throw 'incorrect image dimensions' }; $null = ([System.Drawing.Bitmap]$image).GetPixel(511, 383) } finally { $image.Dispose() }`)
+	command.Env = append(os.Environ(), "PKUDISK_TEST_PHOTO="+name)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Windows GDI+ image decoder: %v\n%s", err, output)
+	}
+	if probe.reads.Load() != 2 {
+		t.Fatalf("5 MiB image decode, random reads, mmap and reopen fetched %d remote ranges, want two", probe.reads.Load())
+	}
+}
+
+func TestWinFspPhotoMmapClient(t *testing.T) {
+	path := os.Getenv("PKUDISK_TEST_MMAP")
+	if path == "" {
+		t.Skip("mmap client helper")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, err := windows.CreateFileMapping(windows.Handle(file.Fd()), nil, windows.PAGE_READONLY, 0, 0, nil)
+	if err != nil {
+		t.Fatal("mapped file creation failed", err)
+	}
+	defer windows.CloseHandle(mapping)
+	address, err := windows.MapViewOfFile(mapping, windows.FILE_MAP_READ, 0, 0, uintptr(stat.Size()))
+	if err != nil {
+		t.Fatal("mapped view failed", err)
+	}
+	defer windows.UnmapViewOfFile(address)
+	mapped := make([]byte, int(stat.Size()))
+	var read uintptr
+	if err := windows.ReadProcessMemory(windows.CurrentProcess(), address, &mapped[0], uintptr(len(mapped)), &read); err != nil || read != uintptr(len(mapped)) {
+		t.Fatal("mapped image read failed", read, err)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(mapped)) != os.Getenv("PKUDISK_TEST_MMAP_HASH") {
+		t.Fatal("mapped image bytes differ")
 	}
 }

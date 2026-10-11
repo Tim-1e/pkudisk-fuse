@@ -72,7 +72,7 @@ func (n *Node) Create(ctx context.Context, name string, flags, mode uint32, out 
 	node.refs++
 	node.fillLocked(&out.Attr)
 	n.f.invalidate()
-	return child, &Handle{node: node, writable: flags&syscall.O_ACCMODE != syscall.O_RDONLY, append: flags&syscall.O_APPEND != 0}, fuse.FOPEN_DIRECT_IO, 0
+	return child, &Handle{node: node, writable: flags&syscall.O_ACCMODE != syscall.O_RDONLY, append: flags&syscall.O_APPEND != 0}, 0, 0
 }
 
 func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {

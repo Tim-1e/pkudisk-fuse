@@ -10,7 +10,7 @@ Investigated on 2026-10-11 against `disk.pku.edu.cn`, using the saved account an
 | Multipart (`osoption`) | `partminsize=20971520`, `partmaxsize=5368709120`, `partmaxnum=10000`. | Parts are 20 MiB–5 GiB, with at most 10,000 parts. Reported multipart capacity is 53,687,091,200,000 bytes (about 48.8 TiB). |
 | Previous client implementation | 16 MiB parts and a fixed 10,000-part rejection. | Artificial upload ceiling of 156.25 GiB, removed by automatic part growth. |
 | Direct file download (`osdownload`) | Streams a signed object-storage GET and supports byte ranges. A complete 20 GiB download succeeded. | No whole-file cap found in this path; validated through 20 GiB. |
-| Mounted writes | Default local cache budget is 10 GiB. | Change `--cache-limit` or set it to `0`; this does not limit unmounted transfers or mounted reads. |
+| Mounted cache | Reads and writes share a 10 GiB local cache budget by default; clean data is evicted before pending writes. | A writable file must fit in the budget; change `--cache-limit` or set it to `0`. Reads cache only requested ranges and have no whole-file size cap. Unmounted transfers do not use this budget. |
 | Operation duration | `--io-timeout` defaults to 10 minutes per file operation. | Increase it for long transfers. This is a time limit, not a byte limit. |
 
 The multipart capacity is the server's configuration, not proof that the account can store a file of that size. Quotas, storage capacity, file policies, and object-storage constraints still apply.
