@@ -8,6 +8,7 @@ import (
 
 const mountPlatformHelp = "Linux requires /dev/fuse and fusermount3/fusermount (install your distribution's\nfuse3 package). Use an existing empty directory. Ctrl-C unmounts."
 const mountPlatformExample = "  mkdir -p ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk --account work --read-only\n  pkudisk-fuse mount ~/PKUNetDisk --root '/My library/Reports'"
+const mountPlatformPoint = "~/PKUNetDisk"
 
 func checkMountSupport() error {
 	file, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)

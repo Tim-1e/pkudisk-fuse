@@ -99,6 +99,11 @@ func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 		{"upload", "source", "--remote", "destination"}, {"download", "remote", "--output", "local"}, {"download", "remote", "-o", "local"},
 		{"ls", "--password-stdin", "--password-file", "file"}, {"ls", "--account", "work", "--username", "user"},
 		{"download", "remote", "--io-timeout", "invalid"}, {"download", "remote", "--io-timeout", "0s"},
+		{"mount", "unused", "--read-block-size", "0"}, {"mount", "unused", "--read-block-size", "513MiB"},
+		{"mount", "unused", "--read-whole-file", "-1"}, {"mount", "unused", "--read-whole-file", "513MiB"},
+		{"mount", "unused", "--read-ahead", "wrong"}, {"mount", "unused", "--read-ahead", "513MiB"},
+		{"mount", "unused", "--read-concurrency", "0"}, {"mount", "unused", "--read-concurrency", "65"},
+		{"mount", "unused", "--cache-limit", "18446744073709551615"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			out, _, err := testExecute(args...)

@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.2.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -162,9 +162,31 @@ PKUDISK_TEST_CREDENTIALS="$HOME/.config/pkudisk-fuse/credentials.json" \
 
 ## File behavior
 
-Mount reads fetch and retain 4 MiB ranges in a private disk cache. Small files fit in one range; large files are cached only as their ranges are read. Repeated reads, seeks and reopening the same revision reuse those bytes. Concurrent readers share a fetch, while metadata queries and warm reads can proceed independently of network I/O. Memory-mapped reads are supported on Linux, macOS and Windows.
+Mount reads fetch files up to 16 MiB whole on first access, if the file fits in the configured disk budget. A 5 MiB photo uses one authorization call and one data GET, including when a viewer starts at its tail. Larger files start with 4 MiB ranges. Consecutive reads double the fetch size up to 16 MiB; seeking resets it to the base range. A read spanning adjacent blocks is batched into one range when the batch fits. Already cached or in-flight neighbours stop the batch, avoiding duplicate transfers. Read-ahead runs as part of the requested fetch; larger batches take longer to complete but reduce subsequent round trips.
 
-Reads and writes share one per-mount `--cache-limit` budget. Clean data is evicted in order of use to make room; pending writes and recovery journals are never evicted. A cached file fitting in one range, or a previously flushed write file, can become writable without another download or allocation. Flushed write contents remain available for subsequent reads until eviction or unmount. Reads still work when the budget is occupied by pending writes, but may not retain new ranges. Clean cache data is removed on unmount.
+Fetches are limited to four at a time per mount. Overlapping requests share one fetch, and queued reads allocate no fetch buffer before admission. Metadata queries and warm reads proceed independently of network I/O and its queue. Repeated reads and reopening the same revision reuse the private disk cache. Memory-mapped reads are supported on Linux, macOS and Windows.
+
+Tune the policy with the same mount flags on all platforms:
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--read-whole-file` | `16MiB` | Fetch files up to this size whole; `0` disables this threshold. |
+| `--read-block-size` | `4MiB` | Base range for large files and random seeks. |
+| `--read-ahead` | `16MiB` | Maximum fetch size for sequential reads and contiguous demand; `0` disables growth and batching beyond the base range. |
+| `--read-concurrency` | `4` | Maximum simultaneous remote fetches; valid range is 1–64. |
+
+Size flags accept bytes, decimal units such as `5MB`, and binary units such as `8MiB` or `2GiB`. Each read size is capped at 512 MiB; a read-ahead value below the base range leaves the base range unchanged. The disk budget can further reduce ranges and batches. Fetch buffers use memory as well as disk: increasing the threshold, batch size or concurrency increases peak memory use. The OS page cache uses additional memory.
+
+For fewer round trips on a fast connection, or smaller fetches on a slower connection:
+
+```sh
+pkudisk-fuse mount ~/PKUNetDisk --read-whole-file 32MiB --read-ahead 64MiB
+pkudisk-fuse mount ~/PKUNetDisk --read-whole-file 0 --read-block-size 1MiB --read-ahead 0 --read-concurrency 2
+```
+
+On Windows use an unused drive letter, such as `P:`, as the mountpoint. `mount --help` explains the policy and includes these examples without requiring an account or a network connection.
+
+Reads and writes share one per-mount `--cache-limit` budget. Clean data is evicted in order of use to make room; pending writes and recovery journals are never evicted. A complete file held in one cached range, including a whole-file fetch or batch, or a previously flushed write file, can become writable without another download or allocation. Flushed write contents remain available for subsequent reads until eviction or unmount. Reads still work when the budget is occupied by pending writes, but may not retain new ranges. Clean cache data is removed on unmount.
 
 New files, overwrites, random writes, truncation, append, mkdir, unlink, rmdir, rename, and same-library moves are supported. Existing-file writes are compared with the remote revision before upload; a concurrent edit returns `EBUSY` and leaves the local write cache for recovery.
 

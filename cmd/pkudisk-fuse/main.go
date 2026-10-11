@@ -177,13 +177,18 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nReads reuse cached ranges; reads and writes share the --cache-limit budget.\nClean data is evicted first. Writes are uploaded on fsync/close. Interrupted\nwrites may remain in the cache; use recover to locate them. --read-only\nprevents remote file changes. An expired session ends the mount.\n\n" + remoteHelp
-		cmd.Example = mountPlatformExample
+		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nSize flags accept bytes or units such as 4MiB and 10GiB. Larger fetches reduce\nround trips but use more bandwidth and memory before the read returns. Set\n--read-whole-file 0 and --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n" + remoteHelp
+		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0"
 		f := cmd.Flags()
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
-		f.Int64Var(&mount.cacheLimit, "cache-limit", 10<<30, "shared read/write cache limit in bytes; clean data is evicted first; 0 disables the limit")
-		f.Int64Var(&mount.partSize, "part-size", 16<<20, "preferred upload part size in bytes, at least 5242880 (5 MiB); adjusted to server limits")
+		mount.cacheLimit, mount.partSize, mount.read = 10<<30, 16<<20, vfs.DefaultReadOptions()
+		f.Var(byteSize{&mount.cacheLimit}, "cache-limit", "shared read/write disk cache budget; clean data is evicted first; 0 disables the limit")
+		f.Var(byteSize{&mount.partSize}, "part-size", "preferred upload chunk size, at least 5MiB; adjusted to server limits")
+		f.Var(byteSize{&mount.read.BlockSize}, "read-block-size", "initial/random read range size (up to 512MiB)")
+		f.Var(byteSize{&mount.read.WholeFile}, "read-whole-file", "fetch files up to this size whole; 0 disables; maximum 512MiB")
+		f.Var(byteSize{&mount.read.ReadAhead}, "read-ahead", "maximum batched fetch for sequential reads; 0 disables growth; maximum 512MiB")
+		f.IntVar(&mount.read.Concurrency, "read-concurrency", mount.read.Concurrency, "maximum simultaneous remote read fetches (1-64)")
 		f.DurationVar(&mount.ttl, "cache-ttl", 2*time.Second, "directory and attribute cache lifetime")
 		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")
 		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")
@@ -206,6 +211,11 @@ func newRemoteCommand(name string) *cobra.Command {
 		}
 		if name == "mount" && (mount.cacheLimit < 0 || mount.partSize < 5<<20 || mount.ttl < 0 || mount.refreshInterval < 0) {
 			return usageFailure(cmd, "cache limits and intervals must be nonnegative; --part-size must be at least 5242880 bytes")
+		}
+		if name == "mount" {
+			if err := mount.read.Validate(); err != nil {
+				return usageFailure(cmd, err.Error())
+			}
 		}
 		if name == "tui" && !interactiveIO(cmd.InOrStdin(), cmd.OutOrStdout()) {
 			return errors.New("tui requires an interactive terminal; use ls, upload, or download for non-interactive operations")

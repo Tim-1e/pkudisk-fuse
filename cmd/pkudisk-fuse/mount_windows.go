@@ -21,6 +21,7 @@ import (
 
 const mountPlatformHelp = "Windows requires WinFsp (https://winfsp.dev/rel/). Choose an unused drive\nletter such as P:, or an empty local directory. Ctrl-C unmounts."
 const mountPlatformExample = "  pkudisk-fuse mount P:\n  pkudisk-fuse mount P: --account work --read-only\n  pkudisk-fuse mount P: --root '/My library/Reports'"
+const mountPlatformPoint = "P:"
 
 func checkMountSupport() error {
 	dllName := "winfsp-x64.dll"
@@ -101,7 +102,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	} else if _, err := client.Roots(ctx); err != nil {
 		return err
 	}
-	core, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, TTL: opts.ttl, IOTimeout: opts.timeout})
+	core, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, Read: &opts.read, TTL: opts.ttl, IOTimeout: opts.timeout})
 	if err != nil {
 		return err
 	}

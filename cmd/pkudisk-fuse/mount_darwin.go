@@ -7,6 +7,7 @@ import (
 
 const mountPlatformHelp = "macOS requires macFUSE (https://macfuse.github.io/) with its kernel extension\nenabled in System Settings. Use an existing empty directory. Ctrl-C unmounts."
 const mountPlatformExample = "  mkdir -p ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk\n  pkudisk-fuse mount ~/PKUNetDisk --account work --read-only\n  pkudisk-fuse mount ~/PKUNetDisk --root '/My library/Reports'"
+const mountPlatformPoint = "~/PKUNetDisk"
 
 func checkMountSupport() error {
 	for _, utility := range []string{

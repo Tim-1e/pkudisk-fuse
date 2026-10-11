@@ -238,7 +238,7 @@ func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
 	}
 	data := encoded.Bytes()
 	// JPEG decoders accept padding after the end marker. Match the reported
-	// 5 MiB file size while file mapping exercises both cached ranges.
+	// 5 MiB file size while file mapping verifies the complete cached file.
 	data = append(data, make([]byte, (5<<20)-len(data))...)
 	seedFile(t, probe.memoryBackend, "照片.jpg", data)
 	adapter := NewWinFsp(context.Background(), core)
@@ -272,8 +272,8 @@ func TestWinFspMountedPhotoDecoderAndMemoryMapping(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Windows GDI+ image decoder: %v\n%s", err, output)
 	}
-	if probe.reads.Load() != 2 {
-		t.Fatalf("5 MiB image decode, random reads, mmap and reopen fetched %d remote ranges, want two", probe.reads.Load())
+	if probe.reads.Load() != 1 {
+		t.Fatalf("5 MiB image decode, random reads, mmap and reopen fetched %d remote ranges, want one", probe.reads.Load())
 	}
 }
 

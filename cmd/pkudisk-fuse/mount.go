@@ -59,7 +59,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	if len(contents) != 0 {
 		return errors.New("mountpoint must be an empty directory")
 	}
-	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, TTL: ttl, IOTimeout: timeout})
+	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, Read: &opts.read, TTL: ttl, IOTimeout: timeout})
 	if err != nil {
 		return err
 	}

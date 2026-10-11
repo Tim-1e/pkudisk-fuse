@@ -16,6 +16,8 @@ import (
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
 
+const readBlockSize int64 = 4 << 20
+
 type readProbe struct {
 	*memoryBackend
 	reads, downloads atomic.Int64
@@ -35,10 +37,14 @@ func (b *readProbe) Download(ctx context.Context, e anyshare.Entry, out io.Write
 	return b.memoryBackend.Download(ctx, e, out)
 }
 
-func readCacheTest(t *testing.T, limit int64) (*FileSystem, *readProbe) {
+func readCacheTest(t *testing.T, limit int64, read ...ReadOptions) (*FileSystem, *readProbe) {
 	t.Helper()
 	b := &readProbe{memoryBackend: newMemory()}
-	f, err := New(b, Options{Root: &b.roots[0], CacheDir: filepath.Join(t.TempDir(), "cache"), CacheLimit: limit, IOTimeout: 5 * time.Second, Logger: log.New(io.Discard, "", 0)})
+	var policy *ReadOptions
+	if len(read) > 0 {
+		policy = &read[0]
+	}
+	f, err := New(b, Options{Root: &b.roots[0], CacheDir: filepath.Join(t.TempDir(), "cache"), CacheLimit: limit, Read: policy, IOTimeout: 5 * time.Second, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +81,9 @@ func TestReadCacheDecoderReadsAndReopen(t *testing.T) {
 }
 
 func TestReadCacheCoalescesWithoutBlockingMetadataOrWarmReads(t *testing.T) {
-	f, b := readCacheTest(t, 3*readBlockSize)
+	policy := DefaultReadOptions()
+	policy.WholeFile, policy.ReadAhead = 0, 0
+	f, b := readCacheTest(t, 3*readBlockSize, policy)
 	data := bytes.Repeat([]byte{0x7b}, int(2*readBlockSize))
 	node := f.makeNode(seedFile(t, b.memoryBackend, "photo.jpg", data))
 	started, release := make(chan struct{}), make(chan struct{})

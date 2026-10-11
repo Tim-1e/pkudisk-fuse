@@ -39,6 +39,7 @@ type Options struct {
 	ReadOnly   bool
 	CacheDir   string
 	CacheLimit int64
+	Read       *ReadOptions
 	TTL        time.Duration
 	IOTimeout  time.Duration
 	Logger     *log.Logger
@@ -57,6 +58,8 @@ type FileSystem struct {
 	listCache   map[string]cachedList
 	budgetMu    sync.Mutex
 	cacheBytes  int64
+	readBytes   int64
+	readSlots   chan struct{}
 	readFiles   map[cacheKey]*list.Element
 	readLRU     list.List
 	readFlights map[cacheKey]*readFlight
@@ -78,6 +81,9 @@ type Node struct {
 	refs      int
 	statAt    time.Time
 	mode      uint32
+	readEnd   int64
+	readSize  int64
+	readRev   string
 }
 
 func New(backend Backend, opts Options) (*FileSystem, error) {
@@ -87,6 +93,14 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 	if opts.TTL < 0 || opts.CacheLimit < 0 {
 		return nil, errors.New("cache limits must be nonnegative")
 	}
+	read := DefaultReadOptions()
+	if opts.Read != nil {
+		read = *opts.Read
+	}
+	if err := read.Validate(); err != nil {
+		return nil, err
+	}
+	opts.Read = &read
 	if opts.IOTimeout <= 0 {
 		opts.IOTimeout = 10 * time.Minute
 	}
@@ -103,7 +117,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight)}
+	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
 	if opts.Root != nil {
 		if !opts.Root.Dir {
 			os.Remove(cache)
