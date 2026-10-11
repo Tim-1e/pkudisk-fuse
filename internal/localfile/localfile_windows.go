@@ -14,6 +14,17 @@ import (
 const PermissionsHelp = "files and directories with a private Windows ACL (current user and SYSTEM only)"
 
 func ValidName(name string) bool {
+	stem := strings.ToUpper(strings.TrimRight(strings.SplitN(name, ".", 2)[0], " "))
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return false
+	}
+	if (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && len([]rune(stem)) == 4 {
+		last := []rune(stem)[3]
+		if last >= '1' && last <= '9' || last == '¹' || last == '²' || last == '³' {
+			return false
+		}
+	}
 	return filepath.IsLocal(name) && filepath.Base(name) == name &&
 		!strings.ContainsAny(name, "<>:\"/\\|?*\x00") && strings.TrimRight(name, ". ") == name &&
 		strings.IndexFunc(name, func(r rune) bool { return r < 32 }) < 0
