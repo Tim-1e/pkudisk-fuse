@@ -44,6 +44,8 @@ and uploads them as a workflow artifact. A separate matrix verifies
 every checksum and archive, then executes the native packaged binary on Linux,
 macOS and Windows. Only after all checks pass does `gh release create` publish
 those same archives and `checksums.txt`; the publish job alone has write access.
+After publication, a read-only job requests the version from Go's official
+proxy and verifies `go install` and version reporting outside the checkout.
 
 The archives include the official project license, NOTICE, README, platform and
 transfer documentation, shell completions, and the Go/dependency license files.

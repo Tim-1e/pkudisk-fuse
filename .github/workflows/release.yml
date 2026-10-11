@@ -121,3 +121,29 @@ jobs:
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
             --notes-file "docs/releases/$RELEASE_TAG.md" "${flags[@]}" \
             release-assets/*.tar.gz release-assets/*.zip release-assets/checksums.txt
+
+  install:
+    name: Verify public Go installation
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: false
+      - name: Index the module and install outside the checkout
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOWORK: 'off'
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          task_install_dir="$RUNNER_TEMP/pkudisk-install"
+          mkdir -p "$task_install_dir"
+          cd "$task_install_dir"
+          export GOBIN="$task_install_dir/bin"
+          go list -m "github.com/thezzisu/pkudisk-fuse@$RELEASE_TAG"
+          go install "github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@$RELEASE_TAG"
+          test "$("$GOBIN/pkudisk-fuse" version)" = "pkudisk-fuse $RELEASE_TAG"
+          "$GOBIN/pkudisk-fuse" --help
