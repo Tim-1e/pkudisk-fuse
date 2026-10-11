@@ -16,6 +16,8 @@ type cliProgress struct {
 	label  string
 	output io.Writer
 	bar    *progressbar.ProgressBar
+	job    bool
+	total  int64
 }
 
 func newCLIProgress(direction string, output io.Writer) *cliProgress {
@@ -26,22 +28,47 @@ func (p *cliProgress) Update(state transfer.Progress) {
 	if !ok || !term.IsTerminal(int(file.Fd())) {
 		return
 	}
-	if p.bar == nil {
+	job := state.Phase == transfer.Preparing || state.Phase == transfer.Extracting
+	total := state.Total
+	if job {
+		total = 100
+	}
+	if total < 0 {
+		total = -1
+	}
+	if p.bar == nil || p.job != job || p.total != total {
+		if p.bar != nil {
+			_ = p.bar.Clear()
+		}
+		p.job, p.total = job, total
 		// Reserve the last step for publication/file installation. This keeps
 		// the displayed percentage below 100% until the operation succeeds.
-		p.bar = progressbar.NewOptions64(state.Total+1,
+		maximum := total + 1
+		if total < 0 {
+			maximum = -1
+		}
+		p.bar = progressbar.NewOptions64(maximum,
 			progressbar.OptionSetWriter(p.output), progressbar.OptionSetWidth(24),
-			progressbar.OptionShowBytes(true), progressbar.OptionShowTotalBytes(false),
+			progressbar.OptionShowBytes(!job), progressbar.OptionShowTotalBytes(false),
 			progressbar.OptionUseIECUnits(true), progressbar.OptionSetPredictTime(true),
 			progressbar.OptionThrottle(100*time.Millisecond), progressbar.OptionUseANSICodes(true),
 			progressbar.OptionOnCompletion(func() { fmt.Fprint(p.output, "\r\n") }),
 		)
 	}
 	phase := ""
+	if job {
+		p.bar.Describe(fmt.Sprintf("%s: %s (%d%%)", p.label, state.Phase, state.Percent))
+		_ = p.bar.Set64(int64(min(state.Percent, 99)))
+		return
+	}
 	if state.Phase == transfer.Finalizing {
 		phase = " finishing..."
 	}
-	p.bar.Describe(fmt.Sprintf("%s %s/%s%s", p.label, transferBytes(state.Done), transferBytes(state.Total), phase))
+	detail := fmt.Sprintf("%s/%s%s", transferBytes(state.Done), transferBytes(state.Total), phase)
+	if state.Total < 0 {
+		detail = transferBytes(state.Done) + " (total unknown)"
+	}
+	p.bar.Describe(p.label + " " + detail)
 	if state.Phase == transfer.Complete {
 		_ = p.bar.Finish()
 	} else {

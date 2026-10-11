@@ -44,6 +44,35 @@ PKU's `osbeginupload` rejects lengths beyond 5 GiB with HTTP 400/code `400000000
 
 These measures only remove client/request-size limits. Account quota, administrator file policies, forbidden types, storage-service limits, and server-side object-storage limits remain authoritative and are reported as errors.
 
+## Directory transfers and archives
+
+Direct directory uploads/downloads walk the selected tree and preserve nested and empty folders. Local symlinks and special files are rejected on upload. Downloads validate every path before creating local files, reject conflicting names on the destination platform, and use `os.Root` to confine tree writes/renames. Each file uses the existing revision-aware upload or checked atomic download path. `--overwrite` merges trees, keeping unrelated entries. Completion is per file; interrupted tree transfers can leave partial output.
+
+The official client's folder download path repeats this request once per second until `progress` reaches 100:
+
+```text
+POST /api/open-doc/v1/file-download
+{"name":"folder.zip","doc":[{"id":"LAST-COMPONENT-OF-GNS-ID"}]}
+```
+
+The response includes `items` with completion/error status and a `package_address`. The client rejects failed items instead of installing a partial ZIP. The package download uses an account `token` query parameter. This token is sent only to the configured server origin; the server's explicit default port (`:443`) is equivalent to the implicit HTTPS port. Redirects are refused, and package URLs/tokens are omitted from errors and diagnostics. Package bytes stream to a local temporary file. A ZIP download installs that file atomically; a folder download checks the ZIP root, traversal, duplicates, symlinks/special files and platform filenames before extracting through the confined local tree writer. No local path is created from an unchecked member.
+
+The live server ZIP preserved Chinese names, zero-length files, nested folders and empty directories. Observed entries used ZIP STORE, so packaging reduces authorization/request overhead rather than bandwidth. `download --archive` saves the ZIP; `download --via-archive` extracts it locally. Default folder downloads use direct file transfers and do not depend on the archive service. Archive failures are explicit; callers can choose the direct route rather than receiving a silent fallback.
+
+Remote extraction follows the same polling pattern:
+
+```text
+POST /api/open-doc/v1/file-unarchiver
+{"doc_id":"LAST-COMPONENT-OF-ARCHIVE-ID","name":"new-folder",
+ "target_path":"gns://LIBRARY/PARENT","ondup":1}
+```
+
+The response reports `progress`, `status` (`extracting` / `complete`), and `unarchive_path`. The client requires a completed job and an output directory directly under the chosen parent. `extract` then lists the output tree, rejecting duplicate local paths. Extraction creates a new folder and never requests overwrite. A live flat ZIP round trip passed. However, the deployed server omitted empty directories and sometimes created multiple nested folders with the same name. That makes server extraction unsuitable for reliable directory uploads, so uploads always send the tree directly. We do not try to merge ambiguous server output. Formats and size policies remain server-controlled; ZIP is verified, and other formats are not claimed as tested.
+
+Neither API exposed a job cancellation endpoint in the official bundle. Cancelling or timing out stops polling; a remote extraction can continue and errors can leave partial output. Error codes `400008002` (official download message: 2 GB) and `400008003` (extraction maximum) describe archive service limits, not direct file limits; the deployed archive thresholds were not measured. `500008012` reports partial extraction, and `403043013` reports different source/destination storage services. These errors are described without leaking response bodies.
+
+Live acceptance compared file SHA-256 across recursive upload/download, server ZIP download, local extraction, remote extraction and overwrite merging; unrelated local files and all direct-transfer empty directories survived. Temporary remote fixtures were deleted. The official client/package was only unpacked under `/tmp` and inspected read-only, never installed or executed.
+
 ## Recovery boundary
 
 The local cache is created below `--cache-dir` with mode `0700`. A dirty inode has an adjacent JSON journal containing only the remote ID, parent ID, revision, cache basename, and update time. It does not contain credentials or signed URLs. A failed upload returns an error to the caller and leaves the cache and journal in place for `recover` inspection.

@@ -11,7 +11,8 @@ Investigated on 2026-10-11 against `disk.pku.edu.cn`, using the saved account an
 | Previous client implementation | 16 MiB parts and a fixed 10,000-part rejection. | Artificial upload ceiling of 156.25 GiB, removed by automatic part growth. |
 | Direct file download (`osdownload`) | Streams a signed object-storage GET and supports byte ranges. A complete 20 GiB download succeeded. | No whole-file cap found in this path; validated through 20 GiB. |
 | Mounted cache | Reads and writes share a 10 GiB local cache budget by default; clean data is evicted before pending writes. | A writable file must fit in the budget; change `--cache-limit` or set it to `0`. Reads fetch small files whole or bounded windows of large files and have no whole-file size cap. Unmounted transfers do not use this budget. |
-| Operation duration | `--io-timeout` defaults to 10 minutes per file operation. | Increase it for long transfers. This is a time limit, not a byte limit. |
+| Folder ZIP / remote extraction | `/open-doc/v1/file-download` and `file-unarchiver` work on PKU. The official bundle has archive download and extraction size-limit errors; their exact deployed thresholds were not tested. | Archive modes can have lower limits than direct transfers. Omit archive flags to download files directly. |
+| Operation duration | `--io-timeout` defaults to 10 minutes per operation, including a whole directory transfer. | Increase it for long transfers. This is a time limit, not a byte limit. |
 
 The multipart capacity is the server's configuration, not proof that the account can store a file of that size. Quotas, storage capacity, file policies, and object-storage constraints still apply.
 

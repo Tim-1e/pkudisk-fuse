@@ -104,6 +104,7 @@ type tuiModel struct {
 	mode                browserMode
 	inputDirection      string
 	source, destination string
+	archive, viaArchive bool
 	status              string
 	statusError         bool
 	busy, quitting      bool
@@ -158,6 +159,9 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 			key.NewBinding(key.WithKeys("backspace", "h"), key.WithHelp("backspace/h", "parent")),
 			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload")),
 			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "download")),
+			key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "download folder ZIP")),
+			key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "download folder via ZIP")),
+			key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "extract remote archive")),
 			key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 			key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "library root")),
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel operation")),
@@ -169,6 +173,9 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 	if err == nil {
 		picker.CurrentDirectory = cwd
 	}
+	picker.DirAllowed = true
+	picker.KeyMap.Open.SetKeys("l", "right", "enter", "space")
+	picker.KeyMap.Select.SetKeys("space")
 	picker.ShowHidden = true
 	picker.ShowSize = true
 	picker.ShowPermissions = false
@@ -240,12 +247,15 @@ func (m *tuiModel) startTransfer(direction, source, destination string, overwrit
 	m.meter = meter
 	m.progressState = transfer.Progress{}
 	service := m.service
+	service.Archive, service.ViaArchive = m.archive, m.viaArchive
 	return tea.Batch(m.spinner.Tick, progressTick(id), func() tea.Msg {
 		defer cancel()
 		var result transfer.Result
 		var err error
 		if direction == "upload" {
 			result, err = service.Upload(ctx, source, destination, overwrite, meter.Update)
+		} else if direction == "extract" {
+			result, err = service.Extract(ctx, source, destination, meter.Update)
 		} else {
 			result, err = service.Download(ctx, source, destination, overwrite, meter.Update)
 		}
@@ -321,7 +331,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if msg.err != nil {
-			if errors.Is(msg.err, anyshare.ErrExists) || errors.Is(msg.err, os.ErrExist) {
+			if (errors.Is(msg.err, anyshare.ErrExists) || errors.Is(msg.err, os.ErrExist)) && msg.direction != "extract" {
 				m.mode = confirmMode
 				m.inputDirection = msg.direction
 				m.conflict = msg.err.Error()
@@ -330,9 +340,12 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(m.activity, msg.err)
 			return m, nil
 		}
-		m.status = fmt.Sprintf("%s complete: %s (%s)", m.activity, tuiText(msg.result.Entry.Name), transferBytes(msg.result.Entry.Size))
+		m.status = fmt.Sprintf("%s complete: %s (%s)", m.activity, tuiText(msg.result.Entry.Name), transferBytes(msg.result.Bytes))
 		m.statusError = false
-		if msg.direction == "upload" {
+		if msg.result.Entry.Dir {
+			m.status += fmt.Sprintf(" • %d files, %d directories", msg.result.Files, msg.result.Dirs)
+		}
+		if msg.direction == "upload" || msg.direction == "extract" {
 			status := m.status
 			location := m.currentLocation()
 			location.selected = msg.result.Entry.ID
@@ -385,7 +398,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputDirection = "upload"
 				m.mode = pathMode
 				m.input.SetValue("")
-				m.input.Placeholder = "Local file path (supports ~/...)"
+				m.input.Placeholder = "Local file or directory path (supports ~/...)"
 				return m, m.input.Focus()
 			}
 			var cmd tea.Cmd
@@ -403,15 +416,17 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if k == "enter" {
 				value := strings.TrimSpace(m.input.Value())
 				if value == "" {
-					m.status = "Enter a destination or file path"
+					m.status = "Enter a destination or source path"
 					return m, nil
 				}
-				value = expandTUIPath(value)
+				if m.inputDirection != "extract" {
+					value = expandTUIPath(value)
+				}
 				m.input.Blur()
 				if m.inputDirection == "upload" {
 					return m, m.startTransfer("upload", value, m.location.entry.ID, false)
 				}
-				return m, m.startTransfer("download", m.source, value, false)
+				return m, m.startTransfer(m.inputDirection, m.source, value, false)
 			}
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -457,21 +472,36 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.mode = pickerMode
+				m.archive, m.viaArchive = false, false
 				m.status = ""
 				return m, m.picker.Init()
-			case "d":
+			case "d", "a", "v", "x":
 				entry := m.selected()
 				if entry == nil {
 					return m, nil
 				}
-				if entry.Dir {
-					m.status = "Open a folder and select a file to download"
+				if (k == "a" || k == "v") && !entry.Dir {
+					m.status = "Select a folder for ZIP downloads"
 					return m, nil
 				}
 				m.source = entry.ID
 				m.inputDirection = "download"
 				m.mode = pathMode
-				m.input.SetValue(entry.Name)
+				m.archive, m.viaArchive = k == "a", k == "v"
+				value := entry.Name
+				if m.archive {
+					value += ".zip"
+				}
+				if k == "x" {
+					if entry.Dir || m.location.entry == nil {
+						m.status = "Select a remote archive file to extract"
+						m.mode = browseMode
+						return m, nil
+					}
+					m.inputDirection = "extract"
+					value = m.location.path
+				}
+				m.input.SetValue(value)
 				m.input.CursorEnd()
 				m.status = ""
 				return m, m.input.Focus()
@@ -540,11 +570,22 @@ func (m *tuiModel) View() tea.View {
 	var content string
 	switch m.mode {
 	case pickerMode:
-		content = accent.Render("Choose a local file to upload") + "\nLocal: " + tuiText(m.picker.CurrentDirectory) + "\n\n" + m.picker.View() + "\n\n↑/↓ move • Enter open/select • Backspace parent • p type path • Esc cancel"
+		content = accent.Render("Choose a local file or directory to upload") + "\nLocal: " + tuiText(m.picker.CurrentDirectory) + "\n\n" + m.picker.View() + "\n\n↑/↓ move • Enter open folder • Space select • Backspace parent\np type path • Esc cancel"
 	case pathMode:
-		content = accent.Render("Enter a local path") + "\n" + m.input.View() + "\n\nEnter continue • Esc cancel"
+		label := "Enter a local path"
+		mode := "direct transfer"
+		if m.archive {
+			mode = "server ZIP download"
+		} else if m.viaArchive {
+			mode = "ZIP transfer + extraction"
+		}
+		if m.inputDirection == "extract" {
+			label = "Enter a remote destination (new folder)"
+			mode = "Server extraction may omit empty folders; cancellation only stops waiting"
+		}
+		content = accent.Render(label) + "\nMode: " + mode + "\n" + m.input.View() + "\n\nEnter continue • Esc cancel"
 	case confirmMode:
-		content = accent.Render("Overwrite existing file?") + "\n\n" + tuiText(m.conflict) + "\n\n[y] overwrite  [n/Esc] keep existing file"
+		content = accent.Render("Overwrite files / merge directory?") + "\n\n" + tuiText(m.conflict) + "\n\n[y] replace matching files; keep unrelated entries  [n/Esc] cancel"
 	default:
 		content = m.remote.View()
 	}
@@ -556,16 +597,28 @@ func (m *tuiModel) View() tea.View {
 			if state.Total > 0 {
 				percent = float64(state.Done) / float64(state.Total)
 			}
-			if state.Phase != transfer.Complete {
+			if state.Phase == transfer.Preparing || state.Phase == transfer.Extracting {
+				percent = float64(state.Percent) / 100
+			}
+			if state.Phase == transfer.Complete {
+				percent = 1
+			} else {
 				percent = min(percent, 0.99)
 			}
 			phase := ""
 			if state.Phase == transfer.Finalizing {
 				phase = "  finishing..."
 			}
-			content += "\n" + m.progress.ViewAs(percent) + "\n" + transferBytes(state.Done) + " / " + transferBytes(state.Total) + phase
+			detail := transferBytes(state.Done) + " / " + transferBytes(state.Total) + phase
+			if state.Total < 0 {
+				detail = transferBytes(state.Done) + " (total unknown)"
+			}
+			if state.Phase == transfer.Preparing || state.Phase == transfer.Extracting {
+				detail = fmt.Sprintf("%s (%d%%)", state.Phase, state.Percent)
+			}
+			content += "\n" + m.progress.ViewAs(percent) + "\n" + detail
 			elapsed := time.Since(m.started).Seconds()
-			if elapsed > 0 && state.Done > 0 {
+			if elapsed > 0 && state.Done > 0 && state.Phase == transfer.Transferring {
 				content += "  " + transferBytes(int64(float64(state.Done)/elapsed)) + "/s"
 			}
 		}

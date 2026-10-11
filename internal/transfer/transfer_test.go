@@ -121,6 +121,8 @@ type fixtureBackend struct {
 	data       []byte
 	downloaded func(context.Context, anyshare.Entry, io.Writer) error
 	uploaded   func(context.Context, io.ReaderAt, int64) (anyshare.Entry, error)
+	archive    func(context.Context, anyshare.Entry, io.Writer, func(anyshare.ArchiveProgress)) (int64, error)
+	extract    func(context.Context, anyshare.Entry, string, string, func(int)) (anyshare.Entry, error)
 }
 
 func (b *fixtureBackend) Resolve(_ context.Context, selector string) (anyshare.Entry, error) {

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +18,11 @@ import (
 )
 
 type tuiBackend struct {
+	*anyshare.Client
 	entries  []anyshare.Entry
 	listErr  error
 	download func(context.Context, io.Writer) error
+	archive  func(context.Context, io.Writer, func(anyshare.ArchiveProgress)) (int64, error)
 }
 
 func (b *tuiBackend) Roots(context.Context) ([]anyshare.Entry, error) {
@@ -36,6 +42,9 @@ func (b *tuiBackend) Upload(context.Context, string, string, *anyshare.Entry, io
 }
 func (b *tuiBackend) Download(ctx context.Context, e anyshare.Entry, dest io.Writer) error {
 	return b.download(ctx, dest)
+}
+func (b *tuiBackend) DownloadArchive(ctx context.Context, e anyshare.Entry, dest io.Writer, observe func(anyshare.ArchiveProgress)) (int64, error) {
+	return b.archive(ctx, dest, observe)
 }
 func finishNetworkCommand(t *testing.T, model *tuiModel, cmd tea.Cmd) {
 	t.Helper()
@@ -100,4 +109,62 @@ func TestTUIShowsAccountAndResizesList(t *testing.T) {
 	if !view.AltScreen || !strings.Contains(view.Content, "Account: work") || model.remote.Width() != 56 {
 		t.Fatal("missing account or responsive list layout")
 	}
+}
+
+func TestTUIDirectoryDownloads(t *testing.T) {
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	writer.Create("folder/")
+	w, _ := writer.Create("folder/file.txt")
+	io.WriteString(w, "hello")
+	writer.Close()
+	for _, action := range []rune{'d', 'a', 'v'} {
+		t.Run(string(action), func(t *testing.T) {
+			entry := anyshare.Entry{ID: "gns://lib/folder", Name: "folder", Dir: true}
+			backend := &tuiBackend{entries: []anyshare.Entry{entry}, archive: func(_ context.Context, dest io.Writer, observe func(anyshare.ArchiveProgress)) (int64, error) {
+				n, err := dest.Write(buf.Bytes())
+				observe(anyshare.ArchiveProgress{Done: int64(n), Total: int64(n)})
+				return int64(n), err
+			}}
+			model := newTUIModel(context.Background(), backend, "test", "server", time.Second)
+			finishNetworkCommand(t, model, model.Init())
+			model.Update(tea.KeyPressMsg{Code: action, Text: string(action)})
+			if model.mode != pathMode || model.archive != (action == 'a') || model.viaArchive != (action == 'v') {
+				t.Fatal("wrong directory download dialog")
+			}
+			target := filepath.Join(t.TempDir(), "result")
+			model.input.SetValue(target)
+			_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			finishNetworkCommand(t, model, cmd)
+			if model.statusError || !strings.Contains(model.status, "complete") {
+				t.Fatal(model.status)
+			}
+			info, err := os.Stat(target)
+			if err != nil || info.IsDir() != (action != 'a') {
+				t.Fatal("wrong destination type", err)
+			}
+			if action == 'v' {
+				data, err := os.ReadFile(filepath.Join(target, "file.txt"))
+				if err != nil || string(data) != "hello" {
+					t.Fatal("folder extraction failed", err)
+				}
+			}
+		})
+	}
+}
+
+func TestTUIPickerSelectsDirectories(t *testing.T) {
+	local := t.TempDir()
+	folder := filepath.Join(local, "folder")
+	os.Mkdir(folder, 0755)
+	model := newTUIModel(context.Background(), &tuiBackend{}, "test", "server", time.Second)
+	model.location.entry = &anyshare.Entry{ID: "gns://lib", Dir: true}
+	model.mode = pickerMode
+	model.picker.CurrentDirectory = local
+	model.Update(model.picker.Init()())
+	model.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	if !model.busy || model.source != folder || model.mode != browseMode {
+		t.Fatal("Space did not select the directory", model.source)
+	}
+	model.cancel()
 }

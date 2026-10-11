@@ -27,7 +27,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	path := filepath.Join(directory, "pkudisk-fuse")
 	os.Mkdir(path, 0700)
 	os.WriteFile(filepath.Join(path, "accounts.json"), []byte("not JSON"), 0600)
-	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
+	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"extract"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
 	for _, path := range paths {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			direct, stderr, err := testExecute(append(append([]string{}, path...), "--help")...)
@@ -103,6 +103,9 @@ func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 		{"upload", "source", "--remote", "destination"}, {"download", "remote", "--output", "local"}, {"download", "remote", "-o", "local"},
 		{"ls", "--password-stdin", "--password-file", "file"}, {"ls", "--account", "work", "--username", "user"},
 		{"download", "remote", "--io-timeout", "invalid"}, {"download", "remote", "--io-timeout", "0s"},
+		{"download", "folder", "--archive", "--via-archive"},
+		{"upload", "folder", "remote", "--via-archive", "--overwrite"},
+		{"extract", "file"}, {"extract", "file", "remote", "--overwrite"},
 		{"mount", "unused", "--read-block-size", "0"}, {"mount", "unused", "--read-block-size", "513MiB"},
 		{"mount", "unused", "--read-whole-file", "-1"}, {"mount", "unused", "--read-whole-file", "513MiB"},
 		{"mount", "unused", "--read-ahead", "wrong"}, {"mount", "unused", "--read-ahead", "513MiB"},

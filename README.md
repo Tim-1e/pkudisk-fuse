@@ -94,9 +94,9 @@ bin/pkudisk-fuse account remove work
 
 `account` without a subcommand shows help. Account labels and transfer destinations use positional arguments. Commands have no compatibility aliases.
 
-`mount`, `ls`, `tui`, `upload`, and `download` reuse the default account. Pass `--account NAME` to choose another saved account. If the saved session has expired, the stored password is used to log in again and the renewed session is saved.
+`mount`, `ls`, `tui`, `upload`, `download`, and `extract` reuse the default account. Pass `--account NAME` to choose another saved account. If the saved session has expired, the stored password is used to log in again and the renewed session is saved.
 
-`mount`, `ls`, `upload`, and `download` print the selected account and server on standard error before restoring the session or logging in. JSON results remain on standard output. `account` and `tui` omit this announcement.
+`mount`, `ls`, `upload`, `download`, and `extract` print the selected account and server on standard error before restoring the session or logging in. JSON results remain on standard output. `account` and `tui` omit this announcement.
 
 If IAAA requires a CAPTCHA or OTP/SMS verification, the driver prints a prompt. CAPTCHA images are written to a temporary file for the user to inspect and are removed after the answer is entered.
 
@@ -112,7 +112,7 @@ bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-
 bin/pkudisk-fuse ls '/My library/Reports'
 ```
 
-`tui` opens a Bubble Tea terminal browser showing the selected account and remote path. The remote list scrolls, paginates, and supports fuzzy filtering with `/`. Use `j`/`k` or the arrows to move, Enter to open a folder, Backspace to go up, `u` to pick a local file to upload, `d` to edit the selected file's download destination, `r` to refresh, and `?` for keyboard help. The upload picker also accepts `p` to type a local path. `~` is expanded in local path inputs.
+`tui` opens a Bubble Tea terminal browser showing the selected account and remote path. The remote list scrolls, paginates, and supports fuzzy filtering with `/`. Use `j`/`k` or the arrows to move, Enter to open a folder, Backspace to go up, `u` to pick a local file or directory to upload, `d` to download the selected file or folder, `a` to save a folder as a server ZIP, `v` to download a folder through one ZIP and extract locally, `x` to extract an existing remote archive, `r` to refresh, and `?` for keyboard help. In the upload picker, Enter opens a directory, Space selects a file or directory, and `p` lets you type a local path. `~` is expanded in local path inputs.
 
 ```sh
 bin/pkudisk-fuse tui
@@ -125,11 +125,22 @@ Upload and download without mounting the filesystem. Remote paths are library-re
 ```sh
 bin/pkudisk-fuse upload ./report.pdf '/My library/Reports/report.pdf'
 bin/pkudisk-fuse download --overwrite '/My library/Reports/report.pdf' ./report.pdf
+bin/pkudisk-fuse upload ./Photos '/My library/'
+bin/pkudisk-fuse download '/My library/Photos' ~/Downloads/
+bin/pkudisk-fuse download '/My library/Photos' ./photos.zip --archive
+bin/pkudisk-fuse download '/My library/Photos' ./photos --via-archive
+bin/pkudisk-fuse extract '/My library/photos.zip' '/My library/Photos-new'
 ```
 
-Transfers handle one file at a time, not directory trees. A remote folder destination uses the local source name; a local directory destination uses the remote file name. Omitting a download destination saves that name in the current directory, including for a `gns://` selector.
+Directories transfer recursively, preserving nested and empty folders. A remote folder destination uses the local basename; a local directory destination uses the remote basename. A new destination path can rename the result, and its parent must already exist. Omitting a download destination saves the remote name in the current directory, including for a `gns://` selector. Uploads reject symlinks and special files.
 
-Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a maintained progress bar with percentage, transferred/total bytes, speed, and ETA. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is disabled when redirected; `--io-timeout` controls each file operation. Ctrl-C cancels CLI transfers; cancelled downloads preserve an existing destination and remove the temporary file.
+Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a maintained progress bar with percentage, transferred/total bytes, speed, and ETA. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is disabled when redirected; `--io-timeout` bounds the entire transfer, including a directory tree or archive preparation. Ctrl-C cancels CLI transfers; cancelled downloads preserve an existing destination and remove the temporary file.
+
+For directories, `--overwrite` merges trees and replaces matching files while keeping unrelated entries. Each file installs or publishes individually; cancellation can leave a partial tree. Total byte progress covers the tree, and completion reports file and directory counts.
+
+`download --archive` asks the server to package a folder as a ZIP, keeping its top-level name. `--via-archive` downloads the same ZIP, validates its paths and file types, and extracts it into a local folder. This reduces per-file requests for many small files; the observed server ZIP uses stored entries, so it does not reduce payload bytes. These modes need local space for the ZIP, and extraction also needs space for the output. Server archive limits apply; use direct downloads to avoid the archive service's limits. Neither mode silently falls back after a server error.
+
+`extract` runs the server's archive extractor without downloading the archive. It creates a new remote folder and waits for the server job. The server can drop empty directories and sometimes produces duplicate nested folders; duplicate output paths are detected and reported. Directory uploads therefore use the reliable direct path. Extraction errors can leave partial remote output. Cancelling extraction stops waiting, and the server job may continue. See the [archive protocol findings](docs/anyshare-protocol.md#directory-transfers-and-archives).
 
 Uploads negotiate the server's minimum and maximum part sizes and maximum part count, then grow the part size as needed. Large files use the desktop client's multipart protocol to avoid the single-request upload limit. Small and empty files use a single request. Downloads stream 512 MiB ranges with fresh signed URLs and verify the selected revision and exact size. Server quotas, administrator policies, and storage-service limits still apply; increase `--io-timeout` for long transfers. See [the size-limit investigation](docs/transfer-limits.md) for the observed limits and verification.
 

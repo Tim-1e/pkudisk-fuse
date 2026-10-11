@@ -1,4 +1,4 @@
-// Package transfer provides file operations shared by the CLI and TUI. It never
+// Package transfer provides file and directory operations shared by the CLI and TUI. It never
 // prints or prompts; callers receive progress and decide how to present it.
 package transfer
 
@@ -22,57 +22,108 @@ type Backend interface {
 	List(context.Context, string) ([]anyshare.Entry, error)
 	Upload(context.Context, string, string, *anyshare.Entry, io.ReaderAt, int64, time.Time) (anyshare.Entry, error)
 	Download(context.Context, anyshare.Entry, io.Writer) error
+	Mkdir(context.Context, string, string) (anyshare.Entry, error)
+	DownloadArchive(context.Context, anyshare.Entry, io.Writer, func(anyshare.ArchiveProgress)) (int64, error)
+	Extract(context.Context, anyshare.Entry, string, string, func(int)) (anyshare.Entry, error)
 }
 type Phase string
 
 const (
+	Preparing    Phase = "preparing"
 	Transferring Phase = "transferring"
 	Finalizing   Phase = "finalizing"
+	Extracting   Phase = "extracting"
 	Complete     Phase = "complete"
 )
 
 type Progress struct {
 	Done, Total int64
 	Phase       Phase
+	Percent     int // Server job progress during Preparing/Extracting.
 }
 type Observer func(Progress)
 type Result struct {
 	Entry         anyshare.Entry
 	Local, Remote string
+	Bytes         int64
+	Files, Dirs   int
 }
-type Service struct{ Backend Backend }
+type Service struct {
+	Backend             Backend
+	Archive, ViaArchive bool
+}
 
 func (s Service) Upload(ctx context.Context, local, remote string, overwrite bool, observe Observer) (Result, error) {
-	local = localfile.ExpandPath(local)
+	if local == "" {
+		return Result{}, errors.New("upload source path is empty")
+	}
+	local, err := filepath.Abs(localfile.ExpandPath(local))
 	result := Result{Local: local, Remote: remote}
+	if err != nil {
+		return result, err
+	}
+	if s.Archive || s.ViaArchive {
+		return result, errors.New("archive modes are available for directory downloads; upload directory trees directly")
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
+	}
+	info, err := os.Lstat(local)
+	if err != nil {
+		return result, err
+	}
+	if info.IsDir() {
+		return s.uploadTree(ctx, local, remote, overwrite, observe)
+	}
+	if !info.Mode().IsRegular() {
+		return result, errors.New("upload source must be a regular file or directory; symlinks are not followed")
 	}
 	file, err := os.Open(local)
 	if err != nil {
 		return result, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		return result, err
 	}
 	if !info.Mode().IsRegular() {
 		return result, errors.New("upload source must be a regular file")
 	}
+	parent, name, existing, err := s.uploadDestination(ctx, filepath.Base(local), remote)
+	if err != nil {
+		return result, err
+	}
+	if existing != nil {
+		if existing.Dir {
+			return result, errors.New("a remote folder already has that name")
+		}
+		if !overwrite {
+			return result, fmt.Errorf("%w: %q; use --overwrite to replace it", anyshare.ErrExists, name)
+		}
+	}
+	progress := newReporter(info.Size(), observe)
+	entry, err := s.Backend.Upload(ctx, parent, name, existing, progressReaderAt{file, progress}, info.Size(), info.ModTime())
+	if err != nil {
+		return result, err
+	}
+	result.Entry, result.Bytes, result.Files = entry, info.Size(), 1
+	progress.complete()
+	return result, nil
+}
+
+func (s Service) uploadDestination(ctx context.Context, basename, remote string) (parent, name string, existing *anyshare.Entry, err error) {
 	if remote == "" || remote == "/" {
-		return result, errors.New("upload destination must be inside a remote library")
+		return "", "", nil, errors.New("upload destination must be inside a remote library")
 	}
 	candidate, resolveErr := s.Backend.Resolve(ctx, remote)
-	var parent, name string
-	var existing *anyshare.Entry
 	if resolveErr == nil {
 		if candidate.Dir {
 			parent = candidate.ID
-			name = filepath.Base(local)
+			name = basename
 			entries, err := s.Backend.List(ctx, parent)
 			if err != nil {
-				return result, err
+				return "", "", nil, err
 			}
 			for _, entry := range entries {
 				if entry.Name == name {
@@ -89,39 +140,24 @@ func (s Service) Upload(ctx context.Context, local, remote string, overwrite boo
 	} else if errors.Is(resolveErr, anyshare.ErrNotFound) {
 		parentSelector, fileName, err := remoteParent(remote)
 		if err != nil {
-			return result, err
+			return "", "", nil, err
 		}
 		folder, err := s.Backend.Resolve(ctx, parentSelector)
 		if err != nil {
-			return result, fmt.Errorf("resolve upload parent: %w", err)
+			return "", "", nil, fmt.Errorf("resolve destination parent: %w", err)
 		}
 		if !folder.Dir {
-			return result, errors.New("upload parent is not a remote folder")
+			return "", "", nil, errors.New("destination parent is not a remote folder")
 		}
 		parent = folder.ID
 		name = fileName
 	} else {
-		return result, resolveErr
+		return "", "", nil, resolveErr
 	}
 	if parent == "" || !anyshare.ValidName(name) {
-		return result, errors.New("invalid upload destination or file name")
+		return "", "", nil, errors.New("invalid remote destination or file name")
 	}
-	if existing != nil {
-		if existing.Dir {
-			return result, errors.New("a remote folder already has that name")
-		}
-		if !overwrite {
-			return result, fmt.Errorf("%w: %q; use --overwrite to replace it", anyshare.ErrExists, name)
-		}
-	}
-	progress := newReporter(info.Size(), observe)
-	entry, err := s.Backend.Upload(ctx, parent, name, existing, progressReaderAt{file, progress}, info.Size(), info.ModTime())
-	if err != nil {
-		return result, err
-	}
-	result.Entry = entry
-	progress.complete()
-	return result, nil
+	return parent, name, existing, nil
 }
 
 func (s Service) Download(ctx context.Context, remote, local string, overwrite bool, observe Observer) (Result, error) {
@@ -140,7 +176,13 @@ func (s Service) DownloadEntry(ctx context.Context, entry anyshare.Entry, local 
 		return result, err
 	}
 	if entry.Dir {
-		return result, errors.New("download source is a folder; select a single remote file")
+		if s.Archive || s.ViaArchive {
+			return s.downloadArchive(ctx, entry, local, overwrite, observe)
+		}
+		return s.downloadTree(ctx, entry, local, overwrite, observe)
+	}
+	if s.Archive || s.ViaArchive {
+		return result, errors.New("archive download flags require a remote directory")
 	}
 	if !anyshare.ValidName(entry.Name) || entry.Size < 0 {
 		return result, errors.New("invalid remote file name or size")
@@ -197,6 +239,7 @@ func (s Service) DownloadEntry(ctx context.Context, entry anyshare.Entry, local 
 		return result, err
 	}
 	progress.complete()
+	result.Bytes, result.Files = entry.Size, 1
 	return result, nil
 }
 

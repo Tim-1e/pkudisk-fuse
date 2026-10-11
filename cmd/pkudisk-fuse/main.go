@@ -138,7 +138,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
 		fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", installedVersion())
 	}})
-	for _, name := range []string{"ls", "upload", "download", "mount", "tui"} {
+	for _, name := range []string{"ls", "upload", "download", "extract", "mount", "tui"} {
 		root.AddCommand(newRemoteCommand(name))
 	}
 	return root
@@ -146,7 +146,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 
 func newRemoteCommand(name string) *cobra.Command {
 	var credentials authFlags
-	var overwrite, jsonOutput bool
+	var overwrite, jsonOutput, archive, viaArchive bool
 	timeout := 10 * time.Minute
 	var mount mountOptions
 	cmd := &cobra.Command{Use: name, Args: cobra.NoArgs}
@@ -158,22 +158,81 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list accessible document libraries. Each row includes its name, type,\nsize in bytes, and gns:// ID. Use --json for an array of entries.\nA file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
 		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls --account work --json\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
 	case "upload":
-		cmd.Use = "upload LOCAL-FILE REMOTE-DESTINATION"
+		cmd.Use = "upload LOCAL-PATH REMOTE-DESTINATION"
 		cmd.Args = cobra.ExactArgs(2)
-		cmd.Short = "Upload a local file to a remote file path or folder"
-		cmd.Long = "Upload one regular local file without mounting. A folder destination uses\nthe local file name; a file destination can rename it. The destination parent\nmust already exist. Directory trees are not uploaded recursively.\n\nLarge files use multipart uploads with automatically sized parts based on\nthe server's limits. Account quotas and server file policies still apply.\nIncrease --io-timeout for long transfers.\n\nExisting files require --overwrite. A concurrent remote revision change\nreturns an error. Completion is reported after the upload is published.\n\n" + remoteHelp
-		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./report.pdf '/My library/Reports/final.pdf' --overwrite"
-		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing remote file after checking its revision")
+		cmd.Short = "Upload a local file or directory tree"
+		cmd.Long = `Upload a regular file or recursively upload a directory, including empty
+folders. Symlinks and special files are rejected. An existing remote directory
+receives the local basename; a new destination path can rename the source.
+The destination's parent must already exist.
+
+--overwrite replaces files after checking their revisions and merges directory
+trees, keeping unrelated entries. Files publish individually: an interrupted
+tree transfer can leave completed files and folders at the destination.
+
+Uploads send each file directly, using multipart uploads for large files with
+no fixed client file-size cap. The server's archive extractor does not reliably
+preserve nested/empty folders, so directory uploads use this direct path.
+
+Progress goes to stderr. --io-timeout bounds the entire operation, including
+scanning and transferring the tree. Account quotas and file policies apply.
+
+` + remoteHelp
+		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./Photos '/My library/'\n  pkudisk-fuse upload ./Photos '/My library/' --overwrite"
+		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace matching files and merge directories; keep unrelated entries")
 	case "download":
-		cmd.Use = "download REMOTE-FILE [LOCAL-DESTINATION]"
+		cmd.Use = "download REMOTE-PATH [LOCAL-DESTINATION]"
 		cmd.Args = cobra.RangeArgs(1, 2)
-		cmd.Short = "Download a remote file to a local file path or directory"
-		cmd.Long = "Download one remote file without mounting. A local directory destination\nuses the remote file name. Omit the local destination to save that name in the\ncurrent directory, including when selecting a file by gns:// ID. Folder trees\nare not downloaded recursively.\n\nFiles stream through byte ranges with no fixed client file-size cap. Server\nfile policies and available local disk space still apply. Increase --io-timeout\nfor long transfers.\n\nExisting local files require --overwrite. Content is size-checked and written\nto a temporary file, then installed atomically. Failed or cancelled transfers\nleave the existing destination intact.\n\n" + remoteHelp
-		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf'\n  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/report.pdf' ./copy.pdf --overwrite"
-		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace an existing local destination")
+		cmd.Short = "Download a file, directory tree, or server-generated ZIP"
+		cmd.Long = `Download a file or recursively download a directory, including empty folders.
+An existing local directory receives the remote basename. Omit the destination
+to use that name in the current directory. A new path can rename the result.
+The local parent directory must already exist.
+
+Directory modes (choose one):
+  default        Transfer each file directly; no archive service required.
+  --archive      Ask the server to package the folder and save NAME.zip.
+  --via-archive  Download one server ZIP and extract it into a local folder.
+
+Archive modes reduce per-file requests. The observed ZIP uses stored entries,
+so payload bytes are not reduced. Server archive limits apply.
+They need local space for the ZIP; --via-archive also needs space for extracted
+files. ZIP paths are checked before extraction; symlinks and unsafe names are
+rejected. Omit archive flags for direct transfers using bounded byte ranges
+with no fixed client file-size cap. Archives keep the selected top-level folder.
+
+--overwrite atomically replaces matching files or the ZIP and merges directory
+trees, keeping unrelated entries. Failed file transfers preserve existing files.
+Directory files install individually: cancellation can leave a partial tree.
+Progress goes to stderr. --io-timeout bounds the entire operation.
+
+` + remoteHelp
+		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/Photos' ~/Downloads/\n  pkudisk-fuse download '/My library/Photos' ./photos.zip --archive\n  pkudisk-fuse download '/My library/Photos' ./photos --via-archive"
+		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace matching files/ZIPs and merge directories; keep unrelated entries")
+		cmd.Flags().BoolVar(&archive, "archive", false, "package a remote directory on the server and save it as a ZIP")
+		cmd.Flags().BoolVar(&viaArchive, "via-archive", false, "download a directory as one server ZIP, then extract locally")
+	case "extract":
+		cmd.Use = "extract REMOTE-ARCHIVE REMOTE-DESTINATION"
+		cmd.Args = cobra.ExactArgs(2)
+		cmd.Short = "Extract an archive on the server into a new remote folder"
+		cmd.Long = `Ask the netdisk to extract an existing remote archive without downloading it.
+An existing destination directory receives a new folder named after the archive
+without its suffix; a new path selects the folder name. The parent must exist.
+Existing folders/files are never replaced. Formats and extraction size limits
+are determined by the server. ZIP is verified on PKU NetDisk. The server can
+omit empty directories and produce duplicate nested folder names. We check the
+output tree for ambiguous paths and report an error if found. Use direct upload for a reliable local tree
+transfer.
+
+Shows server job progress and waits for completion. Errors can leave a partial
+remote folder. Cancellation or --io-timeout stops waiting; the server job may
+continue because the official protocol exposes no job cancellation endpoint.
+
+` + remoteHelp
+		cmd.Example = "  pkudisk-fuse extract '/My library/photos.zip' '/My library/'\n  pkudisk-fuse extract '/My library/photos.zip' '/My library/Photos-new'"
 	case "tui":
 		cmd.Short = "Open an interactive remote file browser"
-		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads, d downloads, r refreshes, ? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
+		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads files/folders, d downloads files/folders, a saves a folder ZIP,\nv transfers a folder via ZIP, x extracts a remote archive, r refreshes,\n? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
 		cmd.Example = "  pkudisk-fuse tui\n  pkudisk-fuse tui --account work --io-timeout 30m"
 	case "mount":
 		cmd.Use = "mount MOUNTPOINT"
@@ -201,8 +260,8 @@ func newRemoteCommand(name string) *cobra.Command {
 	if name == "ls" {
 		cmd.Flags().BoolVar(&jsonOutput, "json", false, "write an array of entries as JSON to stdout")
 	}
-	if name == "upload" || name == "download" || name == "tui" || name == "mount" {
-		cmd.Flags().DurationVar(&timeout, "io-timeout", timeout, "timeout per file operation; accepts 30s, 10m, 1h")
+	if name == "upload" || name == "download" || name == "extract" || name == "tui" || name == "mount" {
+		cmd.Flags().DurationVar(&timeout, "io-timeout", timeout, "timeout per operation (including a whole directory transfer); accepts 30s, 10m, 1h")
 	}
 	cmd.Long += "\n\n" + authHelp
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -211,6 +270,9 @@ func newRemoteCommand(name string) *cobra.Command {
 		}
 		if timeout <= 0 {
 			return usageFailure(cmd, "--io-timeout must be positive")
+		}
+		if archive && viaArchive {
+			return usageFailure(cmd, "choose --archive or --via-archive")
 		}
 		if name == "mount" && (mount.cacheLimit < 0 || mount.partSize < 5<<20 || mount.ttl < 0 || mount.refreshInterval < 0) {
 			return usageFailure(cmd, "cache limits and intervals must be nonnegative; --part-size must be at least 5242880 bytes")
@@ -256,14 +318,14 @@ func newRemoteCommand(name string) *cobra.Command {
 				return err
 			}
 			return printEntries(cmd.OutOrStdout(), entries, jsonOutput)
-		case "upload", "download":
+		case "upload", "download", "extract":
 			destination := ""
 			if len(args) == 2 {
 				destination = args[1]
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			return runTransfer(ctx, client, name, args[0], destination, overwrite, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runTransfer(ctx, client, name, args[0], destination, overwrite, archive, viaArchive, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		case "tui":
 			return runTUI(cmd.Context(), client, account, server, timeout, cmd.InOrStdin(), cmd.OutOrStdout())
 		case "mount":
