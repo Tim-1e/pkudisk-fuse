@@ -21,6 +21,7 @@ type memoryBackend struct {
 	failUpload bool
 	failMove   bool
 	roots      []anyshare.Entry
+	quota      anyshare.Quota
 }
 
 func newMemory() *memoryBackend {
@@ -31,6 +32,11 @@ func (b *memoryBackend) Roots(ctx context.Context) ([]anyshare.Entry, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]anyshare.Entry(nil), b.roots...), nil
+}
+func (b *memoryBackend) Quota(context.Context) (anyshare.Quota, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.quota, nil
 }
 func (b *memoryBackend) List(ctx context.Context, id string) ([]anyshare.Entry, error) {
 	b.mu.Lock()

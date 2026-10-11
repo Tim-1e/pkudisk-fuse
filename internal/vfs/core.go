@@ -36,6 +36,10 @@ type Backend interface {
 	Move(context.Context, anyshare.Entry, string) (anyshare.Entry, error)
 }
 
+type quotaBackend interface {
+	Quota(context.Context) (anyshare.Quota, error)
+}
+
 type Options struct {
 	Root       *anyshare.Entry
 	ReadOnly   bool
@@ -81,6 +85,10 @@ type FileSystem struct {
 	readCtx     context.Context
 	cancelReads context.CancelFunc
 	readWG      sync.WaitGroup
+	quotaMu     sync.Mutex
+	quota       anyshare.Quota
+	quotaAt     time.Time
+	quotaValid  bool
 	closed      bool // Protected by budgetMu, alongside flight registration.
 	nodes       sync.Map
 	root        *Node
@@ -238,6 +246,59 @@ func (f *FileSystem) invalidate() {
 	f.listCache = map[string]cachedList{}
 	f.listFlights = make(map[string]*listFlight)
 	f.listMu.Unlock()
+	f.quotaMu.Lock()
+	f.quotaAt = time.Time{}
+	f.quotaMu.Unlock()
+}
+
+const quotaCacheTTL = 5 * time.Second
+
+func (f *FileSystem) quotaSnapshot(ctx context.Context) (anyshare.Quota, error) {
+	provider, ok := f.backend.(quotaBackend)
+	if !ok {
+		return anyshare.Quota{}, errors.New("backend does not expose server quota")
+	}
+	f.quotaMu.Lock()
+	if f.quotaValid && time.Since(f.quotaAt) < quotaCacheTTL {
+		quota := f.quota
+		f.quotaMu.Unlock()
+		return quota, nil
+	}
+	previous, hadPrevious := f.quota, f.quotaValid
+	f.quotaMu.Unlock()
+	quota, err := provider.Quota(ctx)
+	f.quotaMu.Lock()
+	defer f.quotaMu.Unlock()
+	if err != nil {
+		// A stale server value is safer than reporting local cache space or
+		// claiming that the remote library has no capacity at all.
+		if hadPrevious {
+			f.opts.Trace.Printf(ctx, "quota refresh failed; using cached server quota: %v", err)
+			return previous, nil
+		}
+		return anyshare.Quota{}, err
+	}
+	f.quota, f.quotaAt, f.quotaValid = quota, time.Now(), true
+	return quota, nil
+}
+
+func quotaBlocks(bytes, block int64) uint64 {
+	if bytes <= 0 {
+		return 0
+	}
+	blocks := uint64(bytes / block)
+	if bytes%block != 0 {
+		blocks++
+	}
+	return blocks
+}
+
+func (f *FileSystem) quotaSpace(ctx context.Context) (total, available int64, err error) {
+	quota, err := f.quotaSnapshot(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	return quota.Allocated, quota.Available(), nil
 }
 
 func (n *Node) reserveLocked(size int64) error {

@@ -30,6 +30,21 @@ type Entry struct {
 	Created  time.Time `json:"created_at"`
 }
 
+// Quota describes the account's server-side storage allocation. Available is
+// the capacity that a new write can actually consume; local cache free space
+// is deliberately excluded.
+type Quota struct {
+	Allocated int64 `json:"allocated"`
+	Used      int64 `json:"used"`
+}
+
+func (q Quota) Available() int64 {
+	if q.Allocated <= q.Used {
+		return 0
+	}
+	return q.Allocated - q.Used
+}
+
 func (e *Entry) UnmarshalJSON(data []byte) error {
 	type plain Entry
 	var v struct {

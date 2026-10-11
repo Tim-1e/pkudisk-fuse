@@ -27,7 +27,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	path := filepath.Join(directory, "pkudisk-fuse")
 	os.Mkdir(path, 0700)
 	os.WriteFile(filepath.Join(path, "accounts.json"), []byte("not JSON"), 0600)
-	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"extract"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
+	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"extract"}, {"recover"}, {"tui"}, {"util"}, {"util", "quota"}, {"util", "search"}, {"util", "copy"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
 	for _, path := range paths {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			direct, stderr, err := testExecute(append(append([]string{}, path...), "--help")...)

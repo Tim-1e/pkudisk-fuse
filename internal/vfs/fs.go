@@ -114,6 +114,30 @@ func (n *Node) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) 
 	return 0
 }
 
+// Statfs reports server allocation and the bytes still writable by the
+// account. The local cache volume is intentionally not used here: it is an
+// implementation detail and can be larger or smaller than the remote quota.
+func (n *Node) Statfs(ctx context.Context, out *fuse.StatfsOut) (result syscall.Errno) {
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "statfs path=%q", n.traceName)
+	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
+	total, available, err := n.f.quotaSpace(ctx)
+	if err != nil {
+		return n.failure("statfs quota", err)
+	}
+	const blockSize int64 = 4096
+	*out = fuse.StatfsOut{
+		Blocks:  quotaBlocks(total, blockSize),
+		Bfree:   uint64(max(available/blockSize, 0)),
+		Bavail:  uint64(max(available/blockSize, 0)),
+		Files:   1 << 48,
+		Ffree:   1 << 48,
+		Bsize:   uint32(blockSize),
+		NameLen: 255,
+		Frsize:  uint32(blockSize),
+	}
+	return 0
+}
+
 func (n *Node) child(ctx context.Context, e anyshare.Entry) *fs.Inode {
 	if old := n.GetChild(e.Name); old != nil {
 		if child, ok := old.Operations().(*Node); ok && child.snapshot().ID == e.ID {

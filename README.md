@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.3` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.4` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -130,6 +130,9 @@ bin/pkudisk-fuse download '/My library/Photos' ~/Downloads/
 bin/pkudisk-fuse download '/My library/Photos' ./photos.zip --archive
 bin/pkudisk-fuse download '/My library/Photos' ./photos --via-archive
 bin/pkudisk-fuse extract '/My library/photos.zip' '/My library/Photos-new'
+bin/pkudisk-fuse util quota
+bin/pkudisk-fuse util search report --in '/My library/Reports'
+bin/pkudisk-fuse util copy '/My library/report.pdf' '/My library/Archive'
 ```
 
 Directories transfer recursively, preserving nested and empty folders. A remote folder destination uses the local basename; a local directory destination uses the remote basename. A new destination path can rename the result, and its parent must already exist. Omitting a download destination saves the remote name in the current directory, including for a `gns://` selector. Uploads reject symlinks and special files.
@@ -155,6 +158,19 @@ bin/pkudisk-fuse mount \
 ```
 
 The selected root is checked against the libraries returned for the authenticated account. A `gns://` ID from another library is rejected.
+
+## Server utilities and mounted free space
+
+`util quota` reads the account allocation and reports `allocated - used` as
+writable remaining capacity. `util search` performs a bounded server-side
+filename search, and `util copy` duplicates a file or folder within NetDisk
+without downloading its bytes through this program. These operations use the
+selected account and never accept arbitrary URL or BitTorrent sources.
+
+FUSE `statfs`/Windows drive free-space queries use the same server quota. The
+local read/write cache volume is not reported as remote capacity. Quota results
+are cached briefly and invalidated after a mount mutation; a transient refresh
+failure uses the last server value during that mount.
 
 ## Long-lived mounts
 

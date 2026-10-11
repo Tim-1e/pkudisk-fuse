@@ -104,7 +104,9 @@ func newRootCommand(in io.Reader, out, errOut io.Writer) *cobra.Command {
 
 Start with "account add" to save a PKU campus login, then "ls" to list
 accessible document libraries. "ls PATH" lists remote folders; "tui" opens a file
-browser. "recover" inspects local writes retained after an interrupted mount.
+browser. "util quota", "util search" and "util copy" use small server-side
+operations without mounting. "recover" inspects local writes retained after an
+interrupted mount.
 
 Run "pkudisk-fuse help COMMAND" or "COMMAND --help" for usage and examples.
 Flags may appear before or after arguments. Use -- before a file name that
@@ -134,7 +136,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 			return target.Help()
 		},
 	})
-	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand())
+	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand(), newUtilCommand())
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
 		fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", installedVersion())
 	}})

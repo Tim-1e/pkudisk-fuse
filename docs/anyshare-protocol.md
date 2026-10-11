@@ -44,6 +44,60 @@ PKU's `osbeginupload` rejects lengths beyond 5 GiB with HTTP 400/code `400000000
 
 These measures only remove client/request-size limits. Account quota, administrator file policies, forbidden types, storage-service limits, and server-side object-storage limits remain authoritative and are reported as errors.
 
+## Server utilities and quota
+
+The account quota endpoint is read-only:
+
+```text
+GET /api/efast/v1/quota/user
+```
+
+It returns `allocated` and `used` byte counts. The client reports
+`max(allocated-used, 0)` as writable remaining capacity. FUSE `statfs` and
+Windows WinFsp `Statfs` use this value for `Bfree`/`Bavail`; they do not report
+free bytes on the private local cache volume. A short cache avoids repeated
+quota requests, and namespace mutations invalidate it. If a refresh fails after
+one successful value, the mount keeps the last server value until the next
+refresh; a first refresh failure returns an I/O error instead of inventing a
+local capacity.
+
+The optional `util` command group currently exposes three small server-side
+operations:
+
+```text
+POST /api/ecosearch/v1/file-search
+{"quick_search":true,"dimension":["basename"],"keyword":"...",
+ "rows":25,"range":[],"start":0,"type":"doc"}
+```
+
+`util search` resolves an optional folder scope first, then requests one bounded
+filename page. It validates returned IDs, names and sizes before printing them.
+
+```text
+POST /api/efast/v1/file/copy
+{"docid":"SOURCE-ID","destparent":"DESTINATION-ID","ondup":1}
+```
+
+For directories the path is `dir/copy` and includes
+`check_upload_process:true`. A directory copy can return a server job ID; the
+client polls:
+
+```text
+POST /api/efast/v1/dir/copyprogress
+{"id":"JOB-ID"}
+```
+
+`util copy` waits for the server to finish and never moves file bytes through
+the local machine. Existing-name behavior remains the server's policy. Server
+permissions, approval requirements and storage-service restrictions can reject
+copy even when ordinary upload/download is allowed.
+
+The inspected official client also contains recycle-bin, version-history,
+batch-metadata and instant-upload protocols. They remain documented in the
+read-only discovery report until their mutation/fallback semantics justify a
+small user-facing interface. No offline URL, BitTorrent or magnet task API was
+found in the official client.
+
 ## Directory transfers and archives
 
 Direct directory uploads/downloads walk the selected tree and preserve nested and empty folders. Local symlinks and special files are rejected on upload. Downloads validate every path before creating local files, reject conflicting names on the destination platform, and use `os.Root` to confine tree writes/renames. Each file uses the existing revision-aware upload or checked atomic download path. `--overwrite` merges trees, keeping unrelated entries. Completion is per file; interrupted tree transfers can leave partial output.

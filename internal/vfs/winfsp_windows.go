@@ -774,19 +774,22 @@ func (w *WinFsp) Releasedir(value string, fh uint64) int { return w.Release(valu
 func (w *WinFsp) Fsyncdir(string, bool, uint64) int      { return 0 }
 
 func (w *WinFsp) Statfs(value string, stat *fuse.Statfs_t) (result int) {
-	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp statfs path=%q", value)
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp statfs path=%q", value)
 	defer func() { finish("%s", winResult(result)) }()
-	// Use the local cache volume's actual free space rather than inventing a
-	// remote quota. The server remains authoritative when publishing writes.
-	p, err := windows.UTF16PtrFromString(w.core.cacheDir)
+	ctx, cancel := w.operation(ctx)
+	defer cancel()
+	total, available, err := w.core.quotaSpace(ctx)
 	if err != nil {
 		return winError(err)
 	}
-	var available, total, free uint64
-	if err := windows.GetDiskFreeSpaceEx(p, &available, &total, &free); err != nil {
-		return winError(err)
+	const blockSize int64 = 4096
+	*stat = fuse.Statfs_t{
+		Bsize: uint64(blockSize), Frsize: uint64(blockSize),
+		Blocks: quotaBlocks(total, blockSize),
+		Bfree:  uint64(max(available/blockSize, 0)),
+		Bavail: uint64(max(available/blockSize, 0)),
+		Files:  1 << 48, Ffree: 1 << 48, Namemax: 255,
 	}
-	*stat = fuse.Statfs_t{Bsize: 4096, Frsize: 4096, Blocks: total / 4096, Bfree: free / 4096, Bavail: available / 4096, Namemax: 255}
 	return 0
 }
 
