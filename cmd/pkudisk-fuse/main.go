@@ -52,10 +52,23 @@ func main() {
 }
 func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
 	root := newRootCommand(in, out, errOut)
+	root.InitDefaultHelpFlag()
+	cmd, remaining, err := root.Find(args)
+	// Validate command groups before Cobra handles --help, so unknown
+	// subcommands cannot silently succeed by printing the parent's help.
+	if err == nil && cmd.HasAvailableSubCommands() {
+		cmd.InitDefaultHelpFlag()
+		if err := cmd.ParseFlags(remaining); err != nil {
+			return usageFailure(cmd, err.Error())
+		}
+		if err := cobra.NoArgs(cmd, cmd.Flags().Args()); err != nil {
+			return usageFailure(cmd, err.Error())
+		}
+	}
 	started := false
 	root.PersistentPreRun = func(*cobra.Command, []string) { started = true }
 	root.SetArgs(args)
-	cmd, err := root.ExecuteContextC(ctx)
+	cmd, err = root.ExecuteContextC(ctx)
 	if err != nil && !started {
 		var usage *usageError
 		if !errors.As(err, &usage) {
@@ -96,12 +109,7 @@ Flags may appear before or after arguments. Use -- before a file name that
 starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 		Example:      "  pkudisk-fuse account add\n  pkudisk-fuse ls\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse tui",
 		SilenceUsage: true, SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return usageFailure(cmd, "unknown command "+args[0])
-			}
-			return cmd.Help()
-		},
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	root.SetIn(in)
 	root.SetOut(out)
@@ -113,19 +121,12 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 		Long:    "Show help without opening credentials or connecting to PKU NetDisk.\nSpecify nested commands, such as 'help account add'.",
 		Example: "  pkudisk-fuse help recover\n  pkudisk-fuse help account add",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := cmd.Root()
-			for _, name := range args {
-				var next *cobra.Command
-				for _, child := range target.Commands() {
-					if child.Name() == name {
-						next = child
-						break
-					}
-				}
-				if next == nil {
-					return usageFailure(cmd, "unknown help topic "+name)
-				}
-				target = next
+			target, remaining, err := cmd.Root().Find(args)
+			if err != nil {
+				return usageFailure(cmd, err.Error())
+			}
+			if len(remaining) > 0 {
+				return usageFailure(cmd, "unknown help topic "+remaining[0])
 			}
 			target.InitDefaultHelpFlag()
 			return target.Help()
@@ -143,7 +144,6 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 
 func newRemoteCommand(name string) *cobra.Command {
 	var credentials authFlags
-	var output string
 	var overwrite, jsonOutput bool
 	timeout := 10 * time.Minute
 	var mount mountOptions
@@ -156,12 +156,11 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list accessible document libraries. Each row includes its name, type,\nsize in bytes, and gns:// ID. Use --json for an array of entries.\nA file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
 		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls --account work --json\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
 	case "upload":
-		cmd.Use = "upload LOCAL-FILE [REMOTE-DESTINATION]"
-		cmd.Args = cobra.RangeArgs(1, 2)
+		cmd.Use = "upload LOCAL-FILE REMOTE-DESTINATION"
+		cmd.Args = cobra.ExactArgs(2)
 		cmd.Short = "Upload a local file to a remote file path or folder"
 		cmd.Long = "Upload one regular local file without mounting. A folder destination uses\nthe local file name; a file destination can rename it. The destination parent\nmust already exist. Directory trees are not uploaded recursively.\n\nLarge files use multipart uploads with automatically sized parts based on\nthe server's limits. Account quotas and server file policies still apply.\nIncrease --io-timeout for long transfers.\n\nExisting files require --overwrite. A concurrent remote revision change\nreturns an error. Completion is reported after the upload is published.\n\n" + remoteHelp
-		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./report.pdf '/My library/Reports/final.pdf' --overwrite\n  pkudisk-fuse upload ./report.pdf --remote '/My library/Reports/'"
-		cmd.Flags().StringVar(&output, "remote", "", "remote destination instead of a second positional argument")
+		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./report.pdf '/My library/Reports/final.pdf' --overwrite"
 		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing remote file after checking its revision")
 	case "download":
 		cmd.Use = "download REMOTE-FILE [LOCAL-DESTINATION]"
@@ -169,7 +168,6 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Short = "Download a remote file to a local file path or directory"
 		cmd.Long = "Download one remote file without mounting. A local directory destination\nuses the remote file name. Omit the local destination to save that name in the\ncurrent directory, including when selecting a file by gns:// ID. Folder trees\nare not downloaded recursively.\n\nFiles stream through byte ranges with no fixed client file-size cap. Server\nfile policies and available local disk space still apply. Increase --io-timeout\nfor long transfers.\n\nExisting local files require --overwrite. Content is size-checked and written\nto a temporary file, then installed atomically. Failed or cancelled transfers\nleave the existing destination intact.\n\n" + remoteHelp
 		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf'\n  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/report.pdf' ./copy.pdf --overwrite"
-		cmd.Flags().StringVarP(&output, "output", "o", "", "local destination instead of a second positional argument")
 		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace an existing local destination")
 	case "tui":
 		cmd.Short = "Open an interactive remote file browser"
@@ -202,12 +200,6 @@ func newRemoteCommand(name string) *cobra.Command {
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if err := credentials.validate(); err != nil {
 			return usageFailure(cmd, err.Error())
-		}
-		if (name == "upload" || name == "download") && len(args) == 2 && cmd.Flags().Changed(map[string]string{"upload": "remote", "download": "output"}[name]) {
-			return usageFailure(cmd, "choose a destination argument or its flag, not both")
-		}
-		if name == "upload" && len(args) == 1 && output == "" {
-			return usageFailure(cmd, "remote destination required: provide REMOTE-DESTINATION or --remote")
 		}
 		if timeout <= 0 {
 			return usageFailure(cmd, "--io-timeout must be positive")
@@ -246,7 +238,7 @@ func newRemoteCommand(name string) *cobra.Command {
 			}
 			return printEntries(cmd.OutOrStdout(), entries, jsonOutput)
 		case "upload", "download":
-			destination := output
+			destination := ""
 			if len(args) == 2 {
 				destination = args[1]
 			}

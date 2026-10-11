@@ -59,7 +59,7 @@ source <(bin/pkudisk-fuse completion bash)
 bin/pkudisk-fuse completion zsh > ~/.zsh/completions/_pkudisk-fuse
 ```
 
-Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `ls`, `account list`, and `recover`, including `[]` for empty results.
+Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `ls`, `account ls`, and `recover`, including `[]` for empty results.
 
 ## Authentication
 
@@ -86,11 +86,13 @@ bin/pkudisk-fuse mount --username YOUR-CAMPUS-ID \
 Use `account` to add a login or manage saved accounts:
 
 ```sh
-bin/pkudisk-fuse account
+bin/pkudisk-fuse account ls
 bin/pkudisk-fuse account add --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-fuse/password work
 bin/pkudisk-fuse account default work
 bin/pkudisk-fuse account remove work
 ```
+
+`account` without a subcommand shows help. Account labels and transfer destinations use positional arguments. Commands have no compatibility aliases.
 
 `mount`, `ls`, `tui`, `upload`, and `download` reuse the default account. Pass `--account NAME` to choose another saved account. If the saved session has expired, the stored password is used to log in again and the renewed session is saved.
 

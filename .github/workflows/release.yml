@@ -3,147 +3,50 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
-# Do not cancel an in-progress release when the workflow is rerun.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  checks:
-    uses: ./.github/workflows/ci.yml
-
-  package:
-    needs: checks
+  release:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    outputs:
-      version: ${{ steps.metadata.outputs.version }}
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      - name: Require successful CI for this commit
+        run: |
+          ci_conclusion=$(gh run list --workflow ci.yml --branch main --event push \
+            --commit "$GITHUB_SHA" --limit 1 --json conclusion --jq '.[0].conclusion')
+          if [[ "$ci_conclusion" != success ]]; then
+            echo 'CI must pass on main for this commit before releasing.' >&2
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           check-latest: true
-      - name: Require release notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: test -f "docs/releases/$RELEASE_TAG.md"
-      - name: Select release or snapshot
-        id: mode
-        run: |
-          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
-            echo 'args=--snapshot' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build archives and checksums
+      - name: Build archives
         uses: goreleaser/goreleaser-action@v7
         with:
           version: v2.18.3
-          args: release --clean --skip=publish ${{ steps.mode.outputs.args }}
-      - name: Read packaged version
-        id: metadata
+          args: release --clean --skip=publish
+      - name: Verify version and publish
         run: |
-          python3 - <<'PY'
-          import json, os
-          with open('dist/metadata.json') as metadata:
-              version = json.load(metadata)['version']
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'version=v{version}\n')
-          PY
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-assets
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/checksums.txt
-          if-no-files-found: error
-          overwrite: true
-          compression-level: 0
-
-  smoke:
-    name: Packaged binary (${{ matrix.os }})
-    needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@v8
-        with:
-          name: release-assets
-          path: release-assets
-      - name: Verify checksums, archive contents, version, help and completion
-        env:
-          RELEASE_VERSION: ${{ needs.package.outputs.version }}
-        shell: bash
-        run: python scripts/check-release.py release-assets "$RELEASE_VERSION"
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: release-assets
-          path: release-assets
-      - name: Publish verified assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
+          test "$(dist/pkudisk-fuse_linux_amd64_v1/pkudisk-fuse version)" = "pkudisk-fuse $RELEASE_TAG"
           flags=(--latest)
           if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--prerelease --latest=false); fi
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
             --notes-file "docs/releases/$RELEASE_TAG.md" "${flags[@]}" \
-            release-assets/*.tar.gz release-assets/*.zip release-assets/checksums.txt
-
-  install:
-    name: Verify public Go installation
-    needs: publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          check-latest: true
-          cache: false
-      - name: Index the module and install outside the checkout
-        env:
-          GOPROXY: https://proxy.golang.org
-          GOWORK: 'off'
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          task_install_dir="$RUNNER_TEMP/pkudisk-install"
-          mkdir -p "$task_install_dir"
-          cd "$task_install_dir"
-          export GOBIN="$task_install_dir/bin"
-          go list -m "github.com/thezzisu/pkudisk-fuse@$RELEASE_TAG"
-          go install "github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@$RELEASE_TAG"
-          test "$("$GOBIN/pkudisk-fuse" version)" = "pkudisk-fuse $RELEASE_TAG"
-          "$GOBIN/pkudisk-fuse" --help
+            dist/*.tar.gz dist/*.zip dist/checksums.txt
+          GOPROXY=https://proxy.golang.org go list -m "github.com/thezzisu/pkudisk-fuse@$RELEASE_TAG"

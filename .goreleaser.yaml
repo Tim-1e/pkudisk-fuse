@@ -3,7 +3,6 @@ project_name: pkudisk-fuse
 
 before:
   hooks:
-    - go mod download
     - sh scripts/release-files.sh
 
 builds:

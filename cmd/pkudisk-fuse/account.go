@@ -21,33 +21,30 @@ Unix uses file mode 0600 and directory mode 0700. Windows uses a private ACL
 granting access only to the current user and SYSTEM.`
 
 func newAccountCommand() *cobra.Command {
-	var jsonOutput bool
 	cmd := &cobra.Command{Use: "account", Short: "Save logins, list accounts, and choose the default",
 		Long: `Manage PKU campus logins saved in the user configuration directory.
 Accounts include a password and renewable session in a private local file.
 The first account becomes the default. Remote commands use that default, or
---account NAME. Omit a subcommand to list accounts. No secrets are displayed.
+--account NAME. Use 'account ls' to inspect saved accounts. No secrets are displayed.
 
-Commands: add verifies and saves a login; list displays saved accounts;
+Commands: add verifies and saves a login; ls displays saved accounts;
 default selects one; remove deletes its saved credentials (not remote files).`,
-		Example: "  pkudisk-fuse account add --name work\n  pkudisk-fuse account list\n  pkudisk-fuse account default work\n  pkudisk-fuse ls --account work",
-		Args:    cobra.NoArgs,
-		RunE:    func(cmd *cobra.Command, _ []string) error { return listAccounts(cmd.OutOrStdout(), jsonOutput) },
+		Example: "  pkudisk-fuse account add work\n  pkudisk-fuse account ls\n  pkudisk-fuse account default work\n  pkudisk-fuse ls --account work",
+		RunE:    func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output account summaries as a JSON array without passwords or tokens")
-	var listJSON bool
-	list := &cobra.Command{Use: "list", Short: "List saved accounts and mark the default", Args: cobra.NoArgs,
+	var jsonOutput bool
+	ls := &cobra.Command{Use: "ls", Short: "List saved accounts and mark the default", Args: cobra.NoArgs,
 		Long:    "List saved account names, usernames, servers, and the default marker.\nPasswords and tokens are excluded from both text and JSON. No network access\nor login is needed.\n\n" + accountStorageHelp,
-		Example: "  pkudisk-fuse account list\n  pkudisk-fuse account list --json",
-		RunE:    func(cmd *cobra.Command, _ []string) error { return listAccounts(cmd.OutOrStdout(), listJSON) },
+		Example: "  pkudisk-fuse account ls\n  pkudisk-fuse account ls --json",
+		RunE:    func(cmd *cobra.Command, _ []string) error { return lsAccounts(cmd.OutOrStdout(), jsonOutput) },
 	}
-	list.Flags().BoolVar(&listJSON, "json", false, "output account summaries as a JSON array")
+	ls.Flags().BoolVar(&jsonOutput, "json", false, "output account summaries as a JSON array without passwords or tokens")
 	var opts authFlags
 	add := &cobra.Command{Use: "add [NAME]", Short: "Verify a campus login and save it locally", Args: cobra.MaximumNArgs(1),
 		Long: `Log in through PKU unified authentication and save the username, password,
 and renewable session. NAME is a local label (default: campus username).
-Use either NAME or --name. The first saved account is the default; --default
-switches the default explicitly. --replace updates an existing label only
+The first saved account is the default; --default switches it explicitly.
+--replace updates an existing label only
 after a successful login. CAPTCHA or OTP/SMS may require interaction.
 
 Credentials:
@@ -62,13 +59,10 @@ Credentials:
 
 Results/status go to stderr. Exit codes: 0 success, 1 login/save failure,
 2 invalid arguments.` + "\n\n" + accountStorageHelp + "\nCredential files must use " + localfile.PermissionsHelp + ".",
-		Example: "  pkudisk-fuse account add work\n  pkudisk-fuse account add --username YOUR-ID --password-file ~/.config/pkudisk-fuse/password --name work\n  pkudisk-fuse account add work --replace --default",
+		Example: "  pkudisk-fuse account add work\n  pkudisk-fuse account add work --username YOUR-ID --password-file ~/.config/pkudisk-fuse/password\n  pkudisk-fuse account add work --replace --default",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.validate(); err != nil {
 				return usageFailure(cmd, err.Error())
-			}
-			if len(args) == 1 && cmd.Flags().Changed("name") {
-				return usageFailure(cmd, "choose NAME or --name, not both")
 			}
 			if len(args) == 1 {
 				opts.saveName = args[0]
@@ -87,11 +81,10 @@ Results/status go to stderr. Exit codes: 0 success, 1 login/save failure,
 		},
 	}
 	opts.addCredentials(add.Flags())
-	add.Flags().StringVar(&opts.saveName, "name", "", "local account label, instead of a NAME argument")
 	add.Flags().BoolVar(&opts.makeDefault, "default", false, "select this account as the default after login")
 	add.Flags().BoolVar(&opts.replace, "replace", false, "update an existing account label after successful login")
 	setDefault := &cobra.Command{Use: "default NAME", Short: "Choose the account used by remote commands", Args: cobra.ExactArgs(1),
-		Long:    "Select a saved account as the default for mount, ls, upload, download,\nand tui. Does not log in or change any remote file. NAME must appear in\n'account list'.",
+		Long:    "Select a saved account as the default for mount, ls, upload, download,\nand tui. Does not log in or change any remote file. NAME must appear in\n'account ls'.",
 		Example: "  pkudisk-fuse account default work",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := accounts.Default()
@@ -120,10 +113,10 @@ Results/status go to stderr. Exit codes: 0 success, 1 login/save failure,
 			return nil
 		},
 	}
-	cmd.AddCommand(add, list, setDefault, remove)
+	cmd.AddCommand(add, ls, setDefault, remove)
 	return cmd
 }
-func listAccounts(output io.Writer, jsonOutput bool) error {
+func lsAccounts(output io.Writer, jsonOutput bool) error {
 	store, err := accounts.Default()
 	if err != nil {
 		return err
@@ -132,18 +125,15 @@ func listAccounts(output io.Writer, jsonOutput bool) error {
 	if err != nil {
 		return err
 	}
-	return printAccounts(output, cfg, jsonOutput)
-}
-func printAccounts(output io.Writer, config accounts.Config, jsonOutput bool) error {
 	type summary struct {
 		Name     string `json:"name"`
 		Username string `json:"username"`
 		Server   string `json:"server"`
 		Default  bool   `json:"default"`
 	}
-	rows := make([]summary, 0, len(config.Accounts))
-	for _, a := range config.Accounts {
-		rows = append(rows, summary{a.Name, a.Username, a.Server, a.Name == config.Default})
+	rows := make([]summary, 0, len(cfg.Accounts))
+	for _, a := range cfg.Accounts {
+		rows = append(rows, summary{a.Name, a.Username, a.Server, a.Name == cfg.Default})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	if jsonOutput {

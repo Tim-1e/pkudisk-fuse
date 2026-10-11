@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 	"github.com/thezzisu/pkudisk-fuse/internal/transfer"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
@@ -26,7 +27,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	path := filepath.Join(directory, "pkudisk-fuse")
 	os.Mkdir(path, 0700)
 	os.WriteFile(filepath.Join(path, "accounts.json"), []byte("not JSON"), 0600)
-	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "list"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
+	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
 	for _, path := range paths {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			direct, stderr, err := testExecute(append(append([]string{}, path...), "--help")...)
@@ -43,18 +44,59 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	if err != nil || stderr != "" || !strings.Contains(out, "recover") {
 		t.Fatal("empty invocation must show help")
 	}
+	out, stderr, err = testExecute("account")
+	if err != nil || stderr != "" || !strings.Contains(out, "Available Commands:") {
+		t.Fatal("account group must show help without reading the account store")
+	}
 	out, stderr, err = testExecute("completion", "zsh")
 	if err != nil || stderr != "" || !strings.Contains(out, "#compdef") {
 		t.Fatalf("completion: %v", err)
 	}
+	out, _, err = testExecute("__complete", "account", "")
+	if err != nil || !strings.Contains(out, "ls\t") || strings.Contains(out, "list\t") {
+		t.Fatal("shell completion must advertise only account ls")
+	}
 }
+
+func TestAccountLsSummaries(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out, stderr, err := testExecute("account", "ls", "--json")
+	if err != nil || stderr != "" || strings.TrimSpace(out) != "[]" {
+		t.Fatalf("empty account listing: %v, %q", err, out)
+	}
+	store, err := accounts.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := accounts.Account{Name: "work", Username: "test-user", Server: "https://disk.pku.edu.cn", Password: "private-test-password"}
+	if err := store.Put(account, true, false); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err = testExecute("account", "ls", "--json")
+	var rows []map[string]any
+	if err != nil || stderr != "" || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 {
+		t.Fatalf("saved account listing: %v, %q", err, out)
+	}
+	row := rows[0]
+	if len(row) != 4 || row["name"] != "work" || row["username"] != "test-user" || row["server"] != account.Server || row["default"] != true {
+		t.Fatal("account ls must expose only the public summary and default marker")
+	}
+	out, stderr, err = testExecute("account", "ls")
+	if err != nil || stderr != "" || !strings.Contains(out, "work") || strings.Contains(out, account.Password) {
+		t.Fatal("text account listing must omit credentials")
+	}
+}
+
 func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"accounts"}, {"roots"}, {"root"}, {"root", "--help"}, {"help", "root"}, {"account", "use", "unused"}, {"account", "delete", "unused"},
 		{"help", "missing"}, {"help", "--json"}, {"recover", "ignored"}, {"root", "ignored"},
+		{"list"}, {"account", "list"}, {"account", "list", "--help"}, {"help", "account", "list"}, {"account", "--json"},
+		{"account", "ls", "unexpected"}, {"account", "add", "--name", "work"},
 		{"account", "default"}, {"account", "add", "one", "two"}, {"upload", "only-source"},
 		{"upload", "source", "destination", "--remote", "conflict"}, {"download", "remote", "local", "--output", "conflict"},
+		{"upload", "source", "--remote", "destination"}, {"download", "remote", "--output", "local"}, {"download", "remote", "-o", "local"},
 		{"ls", "--password-stdin", "--password-file", "file"}, {"ls", "--account", "work", "--username", "user"},
 		{"download", "remote", "--io-timeout", "invalid"}, {"download", "remote", "--io-timeout", "0s"},
 	} {
