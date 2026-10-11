@@ -162,7 +162,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "upload LOCAL-FILE [REMOTE-DESTINATION]"
 		cmd.Args = cobra.RangeArgs(1, 2)
 		cmd.Short = "Upload a local file to a remote file path or folder"
-		cmd.Long = "Upload one regular local file without mounting. A folder destination uses\nthe local file name; a file destination can rename it. The destination parent\nmust already exist. Directory trees are not uploaded recursively.\n\nExisting files require --overwrite. A concurrent remote revision change\nreturns an error. Completion is reported after the upload is published.\n\n" + remoteHelp
+		cmd.Long = "Upload one regular local file without mounting. A folder destination uses\nthe local file name; a file destination can rename it. The destination parent\nmust already exist. Directory trees are not uploaded recursively.\n\nLarge files use multipart uploads with automatically sized parts based on\nthe server's limits. Account quotas and server file policies still apply.\nIncrease --io-timeout for long transfers.\n\nExisting files require --overwrite. A concurrent remote revision change\nreturns an error. Completion is reported after the upload is published.\n\n" + remoteHelp
 		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./report.pdf '/My library/Reports/final.pdf' --overwrite\n  pkudisk-fuse upload ./report.pdf --remote '/My library/Reports/'"
 		cmd.Flags().StringVar(&output, "remote", "", "remote destination instead of a second positional argument")
 		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing remote file after checking its revision")
@@ -170,7 +170,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "download REMOTE-FILE [LOCAL-DESTINATION]"
 		cmd.Args = cobra.RangeArgs(1, 2)
 		cmd.Short = "Download a remote file to a local file path or directory"
-		cmd.Long = "Download one remote file without mounting. A local directory destination\nuses the remote file name. Omit the local destination to save that name in the\ncurrent directory, including when selecting a file by gns:// ID. Folder trees\nare not downloaded recursively.\n\nExisting local files require --overwrite. Content is size-checked and written\nto a temporary file, then installed atomically. Failed or cancelled transfers\nleave the existing destination intact.\n\n" + remoteHelp
+		cmd.Long = "Download one remote file without mounting. A local directory destination\nuses the remote file name. Omit the local destination to save that name in the\ncurrent directory, including when selecting a file by gns:// ID. Folder trees\nare not downloaded recursively.\n\nFiles stream through byte ranges with no fixed client file-size cap. Server\nfile policies and available local disk space still apply. Increase --io-timeout\nfor long transfers.\n\nExisting local files require --overwrite. Content is size-checked and written\nto a temporary file, then installed atomically. Failed or cancelled transfers\nleave the existing destination intact.\n\n" + remoteHelp
 		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf'\n  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/report.pdf' ./copy.pdf --overwrite"
 		cmd.Flags().StringVarP(&output, "output", "o", "", "local destination instead of a second positional argument")
 		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace an existing local destination")
@@ -188,7 +188,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
 		f.Int64Var(&mount.cacheLimit, "cache-limit", 10<<30, "maximum cached bytes; 0 disables the limit")
-		f.Int64Var(&mount.partSize, "part-size", 16<<20, "upload part size in bytes, at least 5242880 (5 MiB)")
+		f.Int64Var(&mount.partSize, "part-size", 16<<20, "preferred upload part size in bytes, at least 5242880 (5 MiB); adjusted to server limits")
 		f.DurationVar(&mount.ttl, "cache-ttl", 2*time.Second, "directory and attribute cache lifetime")
 		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")
 		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")

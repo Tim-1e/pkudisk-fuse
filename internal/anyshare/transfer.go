@@ -178,7 +178,7 @@ func (c *Client) Upload(ctx context.Context, parent, name string, existing *Entr
 	// uploader. Plan before creating a remote upload so a large file never
 	// falls through to the single-request endpoint.
 	var partSize int64
-	if size > 0 && c.PartSize > 0 {
+	if size > 0 {
 		var limits multipartLimits
 		if err := c.post(ctx, "/efast/v1/file/osoption", nil, &limits); err != nil {
 			return Entry{}, fmt.Errorf("get multipart upload limits: %w", err)

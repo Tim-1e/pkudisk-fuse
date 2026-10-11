@@ -102,7 +102,7 @@ Transfers handle one file at a time, not directory trees. A remote folder destin
 
 Uploads refuse to replace an existing remote file unless `--overwrite` is supplied. Downloads use an atomic temporary file and refuse to replace an existing local file unless `--overwrite` is supplied. Interactive terminals show a maintained progress bar with percentage, transferred/total bytes, speed, and ETA. The bar reaches 100% after an upload is published or a download is saved, and marks failed transfers. Progress is disabled when redirected; `--io-timeout` controls each file operation. Ctrl-C cancels CLI transfers; cancelled downloads preserve an existing destination and remove the temporary file.
 
-Uploads follow the desktop client's negotiated sync protocol for files that need multipart transfer. The client asks the server for minimum and maximum part sizes and the maximum part count, then grows the part size as needed so large files avoid the ordinary single-request upload limit. Downloads use bounded ranged requests so a portal response-size limit does not cap a large file. Server quotas, administrator policies, and storage-service limits still apply.
+Uploads negotiate the server's minimum and maximum part sizes and maximum part count, then grow the part size as needed. Large files use the desktop client's multipart protocol to avoid the single-request upload limit. Small and empty files use a single request. Downloads stream 512 MiB ranges with fresh signed URLs and verify the selected revision and exact size. Server quotas, administrator policies, and storage-service limits still apply; increase `--io-timeout` for long transfers. See [the size-limit investigation](docs/transfer-limits.md) for the observed limits and verification.
 
 The `--root` option accepts either the displayed path or an AnyShare `gns://...` object ID. A folder can therefore be mounted directly:
 
@@ -143,7 +143,7 @@ bin/pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse
 
 `recover` lists retained local contents and their recorded remote names/IDs, sizes, revisions, and update times. It runs offline and does not upload, delete, or automatically restore anything. Stop the affected mount, copy needed cached files to a permanent location, then use `upload` with a chosen destination. `recover --help` includes a complete example; `recover --json` returns `[]` when no records exist.
 
-Set `--read-only` when a mount must not issue any mutating API request. The default cache limit is 10 GiB and can be changed with `--cache-limit`; `--part-size` controls multipart upload chunks (minimum 5 MiB).
+Set `--read-only` when a mount must not issue any mutating API request. The default local write-cache limit is 10 GiB; `--cache-limit 0` disables it. `--part-size` sets a preferred upload chunk size (at least 5 MiB), which is adjusted to the server's limits and the file size.
 
 Unmount with `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`). The process also handles Ctrl-C and SIGTERM.
 

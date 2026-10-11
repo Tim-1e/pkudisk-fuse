@@ -1,6 +1,6 @@
 # AnyShare protocol notes
 
-These notes describe the protocol boundary implemented by this repository. They are based on the installed PKU NetDisk 7.0.6-3-281 client (`/opt/pku-netdisk/current`) and live requests made against the service. They contain no account data or bearer tokens.
+These notes describe the protocol boundary implemented by this repository. They are based on PKU NetDisk 7.0.6-3-281, including read-only inspection of its Debian package unpacked under `/tmp`, and live requests made against the service. They contain no account data or bearer tokens.
 
 ## Session
 
@@ -36,9 +36,11 @@ The driver uses these JSON calls:
 
 Downloads begin with `POST /api/efast/v1/file/osdownload`. The returned signed request is restricted to HTTPS on an HTTPS server and is used with a checked `Range` header for `ReadAt`.
 
-The standalone `download` command uses the same `osdownload` request with bounded byte ranges and verifies the exact selected revision size before atomically installing a local file. The range size is kept below the desktop portal's documented 2 GiB response limit; a fresh signed URL is obtained for each range. A server policy or quota can still reject a download.
+The standalone `download` command uses the same `osdownload` request with bounded 512 MiB byte ranges and verifies the exact selected revision size before atomically installing a local file. Each range obtains a fresh signed URL, requests the same revision, and checks `Content-Range` and byte count. No whole-file download size cap was found in this path. The official bundle also includes size errors for preview, conversion, and batch download routes; those do not establish a general object-storage download cap.
 
-For uploads, `POST /api/efast/v1/file/osoption` obtains `partminsize`, `partmaxsize`, and `partmaxnum`. Files larger than the negotiated part size use the desktop sync flow: `osinitmultiupload`, one signed `osuploadpart` request per part, `oscompleteupload`, and the signed completion request returned by that endpoint. This avoids the ordinary `osbeginupload` path's server-specific request and policy limits, including `403002070` with `detail.file_limit_size` when returned. The client increases the negotiated part size when needed and rejects only files beyond the server-reported multipart capacity. A file overwrite includes its current `rev`; the driver obtains a fresh revision before upload and reports a conflict if it changed.
+For uploads, `POST /api/efast/v1/file/osoption` obtains `partminsize`, `partmaxsize`, and `partmaxnum`. The preferred part size is clamped to the server's size bounds and raised to at least `ceil(length / partmaxnum)`. A file beyond `partmaxsize * partmaxnum` fails before a remote upload is created. Files larger than the negotiated part size use `osinitmultiupload`, one signed `osuploadpart` request per part, `oscompleteupload`, and the signed completion request returned by that endpoint. Small and empty files use `osbeginupload`. Both flows publish at `osendupload`. A file overwrite includes its current `rev`; the driver obtains a fresh revision before upload and reports a conflict if it changed.
+
+PKU's `osbeginupload` rejects lengths beyond 5 GiB with HTTP 400/code `400000000`; multipart avoids that endpoint limit. Administrator file-size policies can still return `403002070` and `detail.file_limit_size` from either upload flow or download authorization. Such errors retain the byte limit in their message and map to `EFBIG` in a mount. See [the investigation](transfer-limits.md) for server-reported capacity and validation.
 
 These measures only remove client/request-size limits. Account quota, administrator file policies, forbidden types, storage-service limits, and server-side object-storage limits remain authoritative and are reported as errors.
 
