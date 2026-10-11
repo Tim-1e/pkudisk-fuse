@@ -14,10 +14,10 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/auth"
-	"pkudisk-fuse/internal/localfile"
-	"pkudisk-fuse/internal/vfs"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
 func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth.Session, opts mountOptions, output io.Writer) error {

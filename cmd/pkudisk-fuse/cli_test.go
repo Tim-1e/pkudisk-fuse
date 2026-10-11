@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/transfer"
-	"pkudisk-fuse/internal/vfs"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/transfer"
+	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
 func testExecute(args ...string) (string, string, error) {

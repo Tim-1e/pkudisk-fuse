@@ -4,9 +4,30 @@
 
 The login uses **PKU unified authentication (IAAA)**. The password is RSA encrypted with the public key served by the login page. Saved accounts are stored in a private file below the user configuration directory (0600 on Unix; a restricted ACL on Windows); the password and renewable AnyShare session are used to resume a login without prompting. NetDisk local accounts are intentionally not supported.
 
+## Install
+
+Download a binary archive for your platform from [GitHub Releases](https://github.com/thezzisu/pkudisk-fuse/releases/latest), verify it against the accompanying `checksums.txt`, and extract the executable to a directory on your `PATH`. `amd64` is Intel/AMD x86-64; `arm64` includes Apple Silicon and Windows on ARM. Linux/macOS archives use `.tar.gz`; Windows archives use `.zip`. These binaries do not require Go.
+
+With Go 1.26.9 or newer, install the command with:
+
+```sh
+go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
+```
+
+Use `@v0.1.0` instead of `@latest` to select this release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+
+```sh
+pkudisk-fuse version
+pkudisk-fuse account add
+pkudisk-fuse ls
+pkudisk-fuse tui
+```
+
+Only `mount` needs a filesystem driver: FUSE on Linux, macFUSE on macOS or WinFsp on Windows. See [platform support](docs/platform-support.md) for installation and validation details. Archives also contain shell completion scripts in `completions/`.
+
 ## Build
 
-Go 1.26 or newer is required and must be available as `go` on `PATH`.
+Go 1.26.9 or newer is required and must be available as `go` on `PATH`.
 
 ```sh
 make build
@@ -17,6 +38,8 @@ make check
 The binary is `bin/pkudisk-fuse`. No part of the repository contains an account, password, token, cookie, or private key.
 
 Without Make, build directly with `go build -trimpath -o pkudisk-fuse ./cmd/pkudisk-fuse`; on Windows use `-o pkudisk-fuse.exe`. Cross-builds for Linux/macOS/Windows amd64 and arm64 support `CGO_ENABLED=0`. Native Windows mounts require WinFsp to be installed separately.
+
+For maintainers, [releasing](docs/releasing.md) describes the tagged CI workflow and local packaging rehearsal.
 
 ## Built-in help
 
@@ -150,6 +173,10 @@ bin/pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse
 Set `--read-only` when a mount must not issue any mutating API request. The default local write-cache limit is 10 GiB; `--cache-limit 0` disables it. `--part-size` sets a preferred upload chunk size (at least 5 MiB), which is adjusted to the server's limits and the file size.
 
 Ctrl-C unmounts on all platforms. Linux also supports `fusermount3 -u MOUNTPOINT` (or `fusermount -u MOUNTPOINT`); macOS supports `umount MOUNTPOINT`.
+
+## License
+
+Licensed under [Apache-2.0](LICENSE). The license is the verbatim [official Apache text](https://www.apache.org/licenses/LICENSE-2.0.txt); project attribution is in [NOTICE](NOTICE). Binary archives include third-party licenses in `licenses/`.
 
 ## Implementation notes
 

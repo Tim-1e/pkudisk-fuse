@@ -21,10 +21,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/transfer"
 	"golang.org/x/term"
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/localfile"
-	"pkudisk-fuse/internal/transfer"
 )
 
 type browserBackend interface {

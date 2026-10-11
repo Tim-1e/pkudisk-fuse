@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 type Backend interface {

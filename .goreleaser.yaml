@@ -1,0 +1,47 @@
+version: 2
+project_name: pkudisk-fuse
+
+before:
+  hooks:
+    - go mod download
+    - sh scripts/release-files.sh
+
+builds:
+  - id: pkudisk-fuse
+    main: ./cmd/pkudisk-fuse
+    binary: pkudisk-fuse
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version=v{{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - docs/platform-support.md
+      - docs/transfer-limits.md
+      - completions/*
+      - licenses/Go-LICENSE
+      - licenses/**/*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Version }}-dev"

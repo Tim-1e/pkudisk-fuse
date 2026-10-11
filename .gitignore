@@ -1,5 +1,7 @@
 /bin/
 /dist/
 /.local/
+/licenses/
+/completions/
 *.test
 coverage.out

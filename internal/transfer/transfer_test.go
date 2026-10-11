@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
 
 func TestRemoteParent(t *testing.T) {

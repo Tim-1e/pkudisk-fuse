@@ -2,7 +2,7 @@ package vfs
 
 import (
 	"context"
-	"pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
 
 // AnyShare exposes move and rename separately. Use a unique intermediate name

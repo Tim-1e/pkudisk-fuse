@@ -14,12 +14,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/localfile"
-	"pkudisk-fuse/internal/vfs"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
-
-var version = "dev"
 
 type usageError struct {
 	cause   error
@@ -134,7 +132,9 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 		},
 	})
 	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand())
-	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", version) }})
+	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
+		fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", installedVersion())
+	}})
 	for _, name := range []string{"ls", "upload", "download", "mount", "tui"} {
 		root.AddCommand(newRemoteCommand(name))
 	}

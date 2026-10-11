@@ -10,13 +10,13 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/auth"
-	"pkudisk-fuse/internal/localfile"
-	"pkudisk-fuse/internal/vfs"
 )
 
 const mountPlatformHelp = "Windows requires WinFsp (https://winfsp.dev/rel/). Choose an unused drive\nletter such as P:, or an empty local directory. Ctrl-C unmounts."

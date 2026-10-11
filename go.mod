@@ -1,6 +1,6 @@
-module pkudisk-fuse
+module github.com/thezzisu/pkudisk-fuse
 
-go 1.26.0
+go 1.26.9
 
 require (
 	charm.land/bubbles/v2 v2.2.1
@@ -12,9 +12,9 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/winfsp/cgofuse v1.6.0
-	golang.org/x/net v0.43.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.44.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 )
 
 require (

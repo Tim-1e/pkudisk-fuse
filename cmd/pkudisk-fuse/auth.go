@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/spf13/pflag"
-	"pkudisk-fuse/internal/accounts"
-	"pkudisk-fuse/internal/auth"
-	"pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
+	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 type authFlags struct {

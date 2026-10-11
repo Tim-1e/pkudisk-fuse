@@ -8,8 +8,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"pkudisk-fuse/internal/accounts"
-	"pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 const accountStorageHelp = `Storage defaults:

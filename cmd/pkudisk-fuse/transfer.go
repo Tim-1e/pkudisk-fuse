@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/transfer"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/transfer"
 )
 
 func runTransfer(ctx context.Context, client *anyshare.Client, direction, source, destination string, overwrite bool, out, errOut io.Writer) error {

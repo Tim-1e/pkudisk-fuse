@@ -15,8 +15,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"pkudisk-fuse/internal/auth"
-	"pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 var (

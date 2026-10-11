@@ -7,9 +7,9 @@ import (
 	"errors"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 	"hash/fnv"
 	"os"
-	"pkudisk-fuse/internal/anyshare"
 	"syscall"
 	"time"
 )

@@ -12,7 +12,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
 
 func (n *Node) find(ctx context.Context, name string) (*Node, error) {

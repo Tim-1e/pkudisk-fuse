@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/localfile"
 )
 
 // inodeBase is supplied by go-fuse on Unix. WinFsp addresses the same cached

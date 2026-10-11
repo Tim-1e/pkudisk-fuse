@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
+	"github.com/thezzisu/pkudisk-fuse/internal/transfer"
 	"golang.org/x/term"
-	"pkudisk-fuse/internal/transfer"
 )
 
 type cliProgress struct {

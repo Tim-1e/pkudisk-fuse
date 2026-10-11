@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"pkudisk-fuse/internal/anyshare"
-	"pkudisk-fuse/internal/localfile"
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 )
 
 // Opt-in acceptance uses a new login session and reads only remote metadata and
