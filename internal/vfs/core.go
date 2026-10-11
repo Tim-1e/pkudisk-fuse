@@ -51,6 +51,17 @@ type cachedList struct {
 	expires time.Time
 }
 
+type listFlight struct {
+	done    chan struct{}
+	entries []anyshare.Entry
+	err     error
+}
+
+type statFlight struct {
+	done chan struct{}
+	err  error
+}
+
 type FileSystem struct {
 	backend     Backend
 	opts        Options
@@ -58,6 +69,7 @@ type FileSystem struct {
 	opMu        sync.Mutex
 	listMu      sync.Mutex
 	listCache   map[string]cachedList
+	listFlights map[string]*listFlight
 	budgetMu    sync.Mutex
 	cacheBytes  int64
 	readBytes   int64
@@ -71,22 +83,23 @@ type FileSystem struct {
 
 type Node struct {
 	inodeBase
-	traceName string // Initial name, readable before taking the node lock.
-	f         *FileSystem
-	mu        sync.Mutex
-	entry     anyshare.Entry
-	synthetic bool
-	cache     *os.File
-	cachePath string
-	charged   int64
-	dirty     bool
-	unlinked  bool
-	refs      int
-	statAt    time.Time
-	mode      uint32
-	readEnd   int64
-	readSize  int64
-	readRev   string
+	traceName  string // Initial name, readable before taking the node lock.
+	f          *FileSystem
+	mu         sync.Mutex
+	entry      anyshare.Entry
+	synthetic  bool
+	cache      *os.File
+	cachePath  string
+	charged    int64
+	dirty      bool
+	unlinked   bool
+	refs       int
+	statAt     time.Time
+	statFlight *statFlight
+	mode       uint32
+	readEnd    int64
+	readSize   int64
+	readRev    string
 }
 
 func New(backend Backend, opts Options) (*FileSystem, error) {
@@ -120,7 +133,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
+	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, listFlights: make(map[string]*listFlight), readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
 	opts.Trace.Printf(context.Background(), "mount policy: whole-file=%s block=%s read-ahead=%s concurrency=%d disk-budget=%s metadata-TTL=%s I/O-timeout=%s read-only=%t", diagnostic.Size(read.WholeFile), diagnostic.Size(read.BlockSize), diagnostic.Size(read.ReadAhead), read.Concurrency, diagnostic.Size(opts.CacheLimit), opts.TTL, opts.IOTimeout, opts.ReadOnly)
 	if opts.Root != nil {
 		if !opts.Root.Dir {
@@ -154,11 +167,38 @@ func (f *FileSystem) list(ctx context.Context, n *Node, fresh bool) (result []an
 	e := n.snapshot()
 	f.listMu.Lock()
 	hit, ok := f.listCache[e.ID]
-	f.listMu.Unlock()
 	if !fresh && ok && time.Now().Before(hit.expires) {
+		f.listMu.Unlock()
 		f.opts.Trace.Printf(ctx, "directory cache hit: entries=%d", len(hit.entries))
 		return append([]anyshare.Entry(nil), hit.entries...), nil
 	}
+	if flight := f.listFlights[e.ID]; flight != nil {
+		f.listMu.Unlock()
+		f.opts.Trace.Printf(ctx, "waiting for shared directory listing")
+		select {
+		case <-flight.done:
+			return append([]anyshare.Entry(nil), flight.entries...), flight.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	flight := &listFlight{done: make(chan struct{})}
+	f.listFlights[e.ID] = flight
+	f.listMu.Unlock()
+	// Invalidating the namespace detaches in-flight listings. They still finish
+	// for their callers, but cannot repopulate a cache from before the mutation.
+	defer func() {
+		f.listMu.Lock()
+		if f.listFlights[e.ID] == flight {
+			delete(f.listFlights, e.ID)
+			if resultErr == nil {
+				f.listCache[e.ID] = cachedList{append([]anyshare.Entry(nil), result...), time.Now().Add(f.opts.TTL)}
+			}
+		}
+		flight.entries, flight.err = result, resultErr
+		close(flight.done)
+		f.listMu.Unlock()
+	}()
 	var entries []anyshare.Entry
 	var err error
 	f.opts.Trace.Printf(ctx, "directory cache miss; fetching remote listing (forced=%t)", fresh)
@@ -175,14 +215,21 @@ func (f *FileSystem) list(ctx context.Context, n *Node, fresh bool) (result []an
 			return nil, errors.New("server returned an unsupported directory entry")
 		}
 	}
-	f.listMu.Lock()
-	f.listCache[e.ID] = cachedList{append([]anyshare.Entry(nil), entries...), time.Now().Add(f.opts.TTL)}
-	f.listMu.Unlock()
 	return entries, nil
+}
+
+func (f *FileSystem) listedAt(id string) time.Time {
+	f.listMu.Lock()
+	defer f.listMu.Unlock()
+	if list, ok := f.listCache[id]; ok {
+		return list.expires.Add(-f.opts.TTL)
+	}
+	return time.Time{}
 }
 func (f *FileSystem) invalidate() {
 	f.listMu.Lock()
 	f.listCache = map[string]cachedList{}
+	f.listFlights = make(map[string]*listFlight)
 	f.listMu.Unlock()
 }
 

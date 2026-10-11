@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.1` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.2` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -185,6 +185,8 @@ pkudisk-fuse mount ~/PKUNetDisk --read-whole-file 0 --read-block-size 1MiB --rea
 ```
 
 On Windows use an unused drive letter, such as `P:`, as the mountpoint. `mount --help` explains the policy and includes these examples without requiring an account or a network connection.
+
+Windows directory handles load contents only when the application enumerates them. Attribute-only opens reuse known paths without listing each ancestor. Fresh listing metadata is reused until `--cache-ttl` expires; concurrent directory listings and metadata refreshes share a request. Metadata HTTP requests release the file lock, so cached reads remain available during a refresh. An open directory handle keeps one enumeration snapshot, while namespace changes invalidate listings for subsequent handles.
 
 For a slow or frozen application, capture mount decisions and requests in a log stored in a local folder:
 

@@ -103,20 +103,12 @@ func (n *Node) fillLocked(a *fuse.Attr) {
 func (n *Node) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) (result syscall.Errno) {
 	ctx, finish := n.f.opts.Trace.Begin(ctx, "getattr file=%q", n.traceName)
 	defer func() { finish("%s (errno=%d)", diagnostic.Errno(result), result) }()
+	if err := n.refreshMetadata(ctx); err != nil {
+		return n.failure("stat", err)
+	}
 	n.f.opts.Trace.Printf(ctx, "waiting for file metadata lock")
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if !n.synthetic && !n.dirty && !n.unlinked && n.refs == 0 && time.Since(n.statAt) >= n.f.opts.TTL {
-		n.f.opts.Trace.Printf(ctx, "attribute cache expired; refreshing metadata from server")
-		entry, err := n.f.backend.Stat(ctx, n.entry)
-		if err != nil {
-			return n.failure("stat", err)
-		}
-		n.entry = entry
-		n.statAt = time.Now()
-	} else {
-		n.f.opts.Trace.Printf(ctx, "using local metadata (open-handles=%d pending-write=%t)", n.refs, n.dirty)
-	}
 	n.fillLocked(&out.Attr)
 	n.f.opts.Trace.Printf(ctx, "attributes returned: size=%d mode=%#o", out.Size, out.Mode)
 	return 0
@@ -173,19 +165,13 @@ func (n *Node) Open(ctx context.Context, flags uint32) (handle fs.FileHandle, op
 	if writable && n.f.opts.ReadOnly {
 		return nil, 0, syscall.EROFS
 	}
+	if err := n.refreshMetadata(ctx); err != nil {
+		return nil, 0, n.failure("open", err)
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.entry.Dir {
 		return nil, 0, syscall.EISDIR
-	}
-	if n.refs == 0 && !n.dirty && !n.unlinked {
-		n.f.opts.Trace.Printf(ctx, "first open: checking current server revision")
-		entry, err := n.f.backend.Stat(ctx, n.entry)
-		if err != nil {
-			return nil, 0, n.failure("open", err)
-		}
-		n.entry = entry
-		n.statAt = time.Now()
 	}
 	if writable && !n.unlinked {
 		ok, err := n.f.backend.Can(ctx, n.entry.ID, "modify")

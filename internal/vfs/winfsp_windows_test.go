@@ -144,6 +144,7 @@ func mountWinFspTest(t *testing.T, adapter *WinFsp) string {
 	host := fuse.NewFileSystemHost(adapter)
 	host.SetCapOpenTrunc(true)
 	host.SetCapReaddirPlus(true)
+	host.SetUseIno(true)
 	done := make(chan bool, 1)
 	go func() {
 		defer func() {

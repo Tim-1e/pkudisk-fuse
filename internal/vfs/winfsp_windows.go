@@ -29,6 +29,9 @@ type winHandle struct {
 	node     *Node
 	writable bool
 	append   bool
+	listMu   sync.Mutex
+	listed   bool
+	listedAt time.Time
 	entries  []anyshare.Entry
 }
 
@@ -117,15 +120,20 @@ func winPath(value string) (string, bool) {
 	return path.Clean(value), true
 }
 
-func (w *WinFsp) remember(value string, entry anyshare.Entry) *Node {
+func (w *WinFsp) remember(value string, entry anyshare.Entry, checked time.Time) *Node {
 	w.mu.Lock()
 	node := w.paths[value]
 	w.mu.Unlock()
 	if node != nil {
 		node.mu.Lock()
+		if !node.unlinked && checked.Before(node.statAt) {
+			node.mu.Unlock()
+			return node
+		}
 		if !node.unlinked && node.entry.ID == entry.ID {
 			if !node.dirty && node.refs == 0 {
 				node.entry = entry
+				node.statAt = checked
 			}
 			node.mu.Unlock()
 			return node
@@ -133,14 +141,30 @@ func (w *WinFsp) remember(value string, entry anyshare.Entry) *Node {
 		node.mu.Unlock()
 	}
 	fresh := w.core.makeNode(entry)
+	fresh.statAt = checked
 	w.mu.Lock()
 	if w.paths[value] != node {
 		w.mu.Unlock()
-		return w.remember(value, entry)
+		return w.remember(value, entry, checked)
 	}
 	w.paths[value] = fresh
 	w.mu.Unlock()
 	return fresh
+}
+
+func (w *WinFsp) knownPath(value string) *Node {
+	w.mu.Lock()
+	node := w.paths[value]
+	w.mu.Unlock()
+	if node == nil {
+		return nil
+	}
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	if node.unlinked || value != "/" && node.entry.Name != path.Base(value) {
+		return nil
+	}
+	return node
 }
 
 func (w *WinFsp) resolve(ctx context.Context, value string) (*Node, error) {
@@ -151,10 +175,19 @@ func (w *WinFsp) resolve(ctx context.Context, value string) (*Node, error) {
 	if clean == "/" {
 		return w.core.root, nil
 	}
+	if known := w.knownPath(clean); known != nil {
+		w.core.opts.Trace.Printf(ctx, "known path reused: %q; no ancestor directory walks", clean)
+		return known, nil
+	}
 	current, prefix := w.core.root, ""
 	for _, name := range strings.Split(strings.TrimPrefix(clean, "/"), "/") {
 		if !current.snapshot().Dir {
 			return nil, anyshare.ErrNotFound
+		}
+		next := prefix + "/" + name
+		if known := w.knownPath(next); known != nil {
+			current, prefix = known, next
+			continue
 		}
 		entries, err := w.core.list(ctx, current, false)
 		if err != nil {
@@ -164,7 +197,7 @@ func (w *WinFsp) resolve(ctx context.Context, value string) (*Node, error) {
 		for _, entry := range entries {
 			if entry.Name == name {
 				prefix += "/" + name
-				current = w.remember(prefix, entry)
+				current = w.remember(prefix, entry, w.core.listedAt(current.snapshot().ID))
 				found = true
 				break
 			}
@@ -236,18 +269,14 @@ func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) (result int
 	if err != nil {
 		return winError(err)
 	}
+	if err := node.refreshMetadata(ctx); err != nil {
+		return winError(err)
+	}
 	w.core.opts.Trace.Printf(ctx, "waiting for file metadata lock")
 	node.mu.Lock()
 	defer node.mu.Unlock()
-	if !node.synthetic && !node.dirty && !node.unlinked && node.refs == 0 && time.Since(node.statAt) >= w.core.opts.TTL {
-		w.core.opts.Trace.Printf(ctx, "attribute cache expired; refreshing metadata from server")
-		entry, err := w.core.backend.Stat(ctx, node.entry)
-		if err != nil {
-			return winError(err)
-		}
-		node.entry, node.statAt = entry, time.Now()
-	} else {
-		w.core.opts.Trace.Printf(ctx, "using local metadata (open-handles=%d pending-write=%t)", node.refs, node.dirty)
+	if fh == ^uint64(0) && value != "/" && node.entry.Name != path.Base(value) {
+		return -fuse.ENOENT
 	}
 	mode := node.mode
 	if w.core.opts.ReadOnly || node.synthetic {
@@ -271,18 +300,16 @@ func (w *WinFsp) Open(value string, flags int) (result int, fhOut uint64) {
 	if writable && w.core.opts.ReadOnly {
 		return -fuse.EROFS, ^uint64(0)
 	}
+	if err := node.refreshMetadata(ctx); err != nil {
+		return winError(err), ^uint64(0)
+	}
 	node.mu.Lock()
 	defer node.mu.Unlock()
 	if node.entry.Dir {
 		return -fuse.EISDIR, ^uint64(0)
 	}
-	if node.refs == 0 && !node.dirty {
-		w.core.opts.Trace.Printf(ctx, "first open: checking current server revision")
-		entry, err := w.core.backend.Stat(ctx, node.entry)
-		if err != nil {
-			return winError(err), ^uint64(0)
-		}
-		node.entry, node.statAt = entry, time.Now()
+	if node.entry.Name != path.Base(value) {
+		return -fuse.ENOENT, ^uint64(0)
 	}
 	if writable {
 		allowed, err := w.core.backend.Can(ctx, node.entry.ID, "modify")
@@ -437,7 +464,7 @@ func (w *WinFsp) Create(value string, flags int, mode uint32) (result int, fhOut
 		return w.failure("create file", err), ^uint64(0)
 	}
 	entry.Modified, entry.Created = time.Now(), time.Now()
-	node := w.remember(path.Clean(value), entry)
+	node := w.remember(path.Clean(value), entry, time.Now())
 	node.mu.Lock()
 	defer node.mu.Unlock()
 	node.mode = mode & 0777
@@ -464,7 +491,7 @@ func (w *WinFsp) Mkdir(value string, mode uint32) (result int) {
 	if err != nil {
 		return winError(err)
 	}
-	node := w.remember(path.Clean(value), entry)
+	node := w.remember(path.Clean(value), entry, time.Now())
 	node.mu.Lock()
 	node.mode = mode & 0777
 	node.mu.Unlock()
@@ -689,26 +716,38 @@ func (w *WinFsp) Opendir(value string) (result int, fhOut uint64) {
 	if !node.snapshot().Dir {
 		return -fuse.ENOTDIR, ^uint64(0)
 	}
-	entries, err := w.core.list(ctx, node, false)
-	if err != nil {
-		return winError(err), ^uint64(0)
-	}
+	w.core.opts.Trace.Printf(ctx, "directory handle opened; contents will be fetched only on readdir")
 	node.mu.Lock()
 	node.refs++
 	node.mu.Unlock()
-	return 0, w.addHandle(&winHandle{node: node, entries: entries})
+	return 0, w.addHandle(&winHandle{node: node})
 }
 
 func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bool, off int64, fh uint64) (result int) {
-	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp readdir path=%q handle=%d offset=%d", value, fh, off)
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp readdir path=%q handle=%d offset=%d", value, fh, off)
 	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil || off < 0 {
 		return -fuse.EBADF
 	}
+	ctx, cancel := w.operation(ctx)
+	defer cancel()
+	handle.listMu.Lock()
+	defer handle.listMu.Unlock()
+	if !handle.listed {
+		entries, err := w.core.list(ctx, handle.node, false)
+		if err != nil {
+			return winError(err)
+		}
+		handle.entries, handle.listed = entries, true
+		handle.listedAt = w.core.listedAt(handle.node.snapshot().ID)
+	}
 	if !fill(".", nil, 0) || !fill("..", nil, 0) {
 		return 0
 	}
+	// An open stream may enumerate its old snapshot after a mutation. Return
+	// that snapshot without resurrecting names in the current path index.
+	indexSnapshot := !handle.listedAt.IsZero() && handle.listedAt == w.core.listedAt(handle.node.snapshot().ID)
 	for i, entry := range handle.entries {
 		if int64(i) < off || !localfile.ValidName(entry.Name) {
 			continue
@@ -721,7 +760,9 @@ func (w *WinFsp) Readdir(value string, fill func(string, *fuse.Stat_t, int64) bo
 			mode &= 0555
 		}
 		stat := winStat(entry, mode)
-		w.remember(path.Join(value, entry.Name), entry)
+		if indexSnapshot {
+			w.remember(path.Join(value, entry.Name), entry, handle.listedAt)
+		}
 		if !fill(entry.Name, &stat, int64(i+1)) {
 			break
 		}
