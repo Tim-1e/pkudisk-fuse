@@ -48,6 +48,10 @@ func NewWinFsp(ctx context.Context, core *FileSystem) *WinFsp {
 	return &WinFsp{core: core, ctx: ctx, paths: map[string]*Node{"/": core.root}, handles: map[uint64]*winHandle{}, Ready: make(chan struct{})}
 }
 
+// WinFspMountOptions binds all exposed POSIX owners to the mounting Windows
+// user's SID. WinFsp documents -1 as the mounting user's UID/GID.
+func WinFspMountOptions() []string { return []string{"-o", "uid=-1,gid=-1"} }
+
 func (w *WinFsp) Init() {
 	// WinFsp maps UID/GID to Windows SIDs. Zero would make mode 0700 owned
 	// by a different account, denying the mounting user access to the root.

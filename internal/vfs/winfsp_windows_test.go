@@ -143,7 +143,7 @@ func TestWinFspMountedRoundTrip(t *testing.T) {
 				done <- false
 			}
 		}()
-		done <- host.Mount(point, nil)
+		done <- host.Mount(point, WinFspMountOptions())
 	}()
 	select {
 	case ok := <-done:

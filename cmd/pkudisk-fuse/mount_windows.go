@@ -115,7 +115,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	host.SetCapOpenTrunc(true)
 	host.SetCapReaddirPlus(true)
 	host.SetUseIno(true)
-	arguments := []string{"-o", fmt.Sprintf("fsname=PKUNetDisk,volname=PKU NetDisk,attr_timeout=%g,entry_timeout=%g", opts.ttl.Seconds(), opts.ttl.Seconds())}
+	arguments := append(vfs.WinFspMountOptions(), "-o", fmt.Sprintf("fsname=PKUNetDisk,volname=PKU NetDisk,attr_timeout=%g,entry_timeout=%g", opts.ttl.Seconds(), opts.ttl.Seconds()))
 	if opts.readOnly {
 		arguments = append(arguments, "-o", "ro")
 	}
