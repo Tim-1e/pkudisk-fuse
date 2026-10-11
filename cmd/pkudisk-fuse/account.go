@@ -91,7 +91,7 @@ Results/status go to stderr. Exit codes: 0 success, 1 login/save failure,
 	add.Flags().BoolVar(&opts.makeDefault, "default", false, "select this account as the default after login")
 	add.Flags().BoolVar(&opts.replace, "replace", false, "update an existing account label after successful login")
 	setDefault := &cobra.Command{Use: "default NAME", Short: "Choose the account used by remote commands", Args: cobra.ExactArgs(1),
-		Long:    "Select a saved account as the default for mount, root, ls, upload, download,\nand tui. Does not log in or change any remote file. NAME must appear in\n'account list'.",
+		Long:    "Select a saved account as the default for mount, ls, upload, download,\nand tui. Does not log in or change any remote file. NAME must appear in\n'account list'.",
 		Example: "  pkudisk-fuse account default work",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := accounts.Default()

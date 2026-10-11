@@ -26,7 +26,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	path := filepath.Join(directory, "pkudisk-fuse")
 	os.Mkdir(path, 0700)
 	os.WriteFile(filepath.Join(path, "accounts.json"), []byte("not JSON"), 0600)
-	paths := [][]string{{"mount"}, {"root"}, {"ls"}, {"upload"}, {"download"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "list"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
+	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"recover"}, {"tui"}, {"account"}, {"account", "add"}, {"account", "list"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
 	for _, path := range paths {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			direct, stderr, err := testExecute(append(append([]string{}, path...), "--help")...)
@@ -51,7 +51,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
-		{"accounts"}, {"roots"}, {"account", "use", "unused"}, {"account", "delete", "unused"},
+		{"accounts"}, {"roots"}, {"root"}, {"root", "--help"}, {"help", "root"}, {"account", "use", "unused"}, {"account", "delete", "unused"},
 		{"help", "missing"}, {"help", "--json"}, {"recover", "ignored"}, {"root", "ignored"},
 		{"account", "default"}, {"account", "add", "one", "two"}, {"upload", "only-source"},
 		{"upload", "source", "destination", "--remote", "conflict"}, {"download", "remote", "local", "--output", "conflict"},

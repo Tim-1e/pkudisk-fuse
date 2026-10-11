@@ -36,7 +36,7 @@ source <(bin/pkudisk-fuse completion bash)
 bin/pkudisk-fuse completion zsh > ~/.zsh/completions/_pkudisk-fuse
 ```
 
-Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `root`, `ls`, `account list`, and `recover`, including `[]` for empty results.
+Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `ls`, `account list`, and `recover`, including `[]` for empty results.
 
 ## Authentication
 
@@ -69,9 +69,9 @@ bin/pkudisk-fuse account default work
 bin/pkudisk-fuse account remove work
 ```
 
-`mount`, `root`, `ls`, `tui`, `upload`, and `download` reuse the default account. Pass `--account NAME` to choose another saved account. If the saved session has expired, the stored password is used to log in again and the renewed session is saved.
+`mount`, `ls`, `tui`, `upload`, and `download` reuse the default account. Pass `--account NAME` to choose another saved account. If the saved session has expired, the stored password is used to log in again and the renewed session is saved.
 
-`mount`, `root`, `ls`, `upload`, and `download` print the selected account and server on standard error before restoring the session or logging in. JSON results remain on standard output. `account` and `tui` omit this announcement.
+`mount`, `ls`, `upload`, and `download` print the selected account and server on standard error before restoring the session or logging in. JSON results remain on standard output. `account` and `tui` omit this announcement.
 
 If IAAA requires a CAPTCHA or OTP/SMS verification, the driver prints a prompt. CAPTCHA images are written to a temporary file for the user to inspect and are removed after the answer is entered.
 
@@ -79,10 +79,10 @@ HTTP clients use Go's default TLS and HTTP protocol negotiation. Transport failu
 
 ## Choosing the mounted root
 
-By default the mount root contains every accessible document library. Use `root` or `ls` without a path to inspect the libraries, and pass a library/folder path to `ls` for its contents:
+By default the mount root contains every accessible document library. Use `ls` without a path (or `ls /`) to inspect the libraries, and pass a library/folder path to `ls` for its contents:
 
 ```sh
-bin/pkudisk-fuse root --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-fuse/password
+bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-fuse/password
 bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-fuse/password '/My library/Reports'
 bin/pkudisk-fuse ls '/My library/Reports'
 ```

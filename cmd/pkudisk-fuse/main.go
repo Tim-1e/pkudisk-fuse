@@ -82,21 +82,21 @@ Output:
   to stderr. Exit codes: 0 success, 1 execution failure, 2 invalid command/flags.`
 const remoteHelp = `Remote paths:
   Use "/Library/folder" paths, quoting spaces, or gns:// IDs returned by ls.
-  Only accessible libraries are accepted. Run "pkudisk-fuse root" to find names.`
+  Only accessible libraries are accepted. Run "pkudisk-fuse ls" to find names.`
 
 func newRootCommand(in io.Reader, out, errOut io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use: "pkudisk-fuse", Short: "Browse, transfer, and mount PKU NetDisk files",
 		Long: `Browse PKU NetDisk, transfer files, or mount it on Linux, macOS or Windows.
 
-Start with "account add" to save a PKU campus login, then "root" to list
-accessible document libraries. "ls" lists remote folders; "tui" opens a file
+Start with "account add" to save a PKU campus login, then "ls" to list
+accessible document libraries. "ls PATH" lists remote folders; "tui" opens a file
 browser. "recover" inspects local writes retained after an interrupted mount.
 
 Run "pkudisk-fuse help COMMAND" or "COMMAND --help" for usage and examples.
 Flags may appear before or after arguments. Use -- before a file name that
 starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
-		Example:      "  pkudisk-fuse account add\n  pkudisk-fuse root\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse tui",
+		Example:      "  pkudisk-fuse account add\n  pkudisk-fuse ls\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse tui",
 		SilenceUsage: true, SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -135,7 +135,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 	})
 	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand())
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", version) }})
-	for _, name := range []string{"root", "ls", "upload", "download", "mount", "tui"} {
+	for _, name := range []string{"ls", "upload", "download", "mount", "tui"} {
 		root.AddCommand(newRemoteCommand(name))
 	}
 	return root
@@ -149,16 +149,12 @@ func newRemoteCommand(name string) *cobra.Command {
 	var mount mountOptions
 	cmd := &cobra.Command{Use: name, Args: cobra.NoArgs}
 	switch name {
-	case "root":
-		cmd.Short = "List remote document libraries accessible to this account"
-		cmd.Long = "List the document libraries that form the remote root.\nEach row includes its name, type, and gns:// ID. 'ls' without a path lists the same libraries."
-		cmd.Example = "  pkudisk-fuse root\n  pkudisk-fuse root --account work --json"
 	case "ls":
 		cmd.Use = "ls [REMOTE-DIRECTORY]"
 		cmd.Args = cobra.MaximumNArgs(1)
 		cmd.Short = "List a remote directory or the accessible libraries"
-		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list libraries. A file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
-		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
+		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list accessible document libraries. Each row includes its name, type,\nsize in bytes, and gns:// ID. Use --json for an array of entries.\nA file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
+		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls --account work --json\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
 	case "upload":
 		cmd.Use = "upload LOCAL-FILE [REMOTE-DESTINATION]"
 		cmd.Args = cobra.RangeArgs(1, 2)
@@ -196,7 +192,7 @@ func newRemoteCommand(name string) *cobra.Command {
 		f.BoolVar(&mount.debug, "debug", false, "print FUSE protocol diagnostics to stderr")
 	}
 	credentials.add(cmd.Flags())
-	if name == "root" || name == "ls" {
+	if name == "ls" {
 		cmd.Flags().BoolVar(&jsonOutput, "json", false, "write an array of entries as JSON to stdout")
 	}
 	if name == "upload" || name == "download" || name == "tui" || name == "mount" {
@@ -239,7 +235,7 @@ func newRemoteCommand(name string) *cobra.Command {
 			return err
 		}
 		switch name {
-		case "root", "ls":
+		case "ls":
 			selector := "/"
 			if len(args) == 1 {
 				selector = args[0]
