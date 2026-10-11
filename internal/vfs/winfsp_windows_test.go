@@ -14,9 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
@@ -324,5 +326,62 @@ func TestWinFspPhotoMmapClient(t *testing.T) {
 	}
 	if fmt.Sprintf("%x", sha256.Sum256(mapped)) != os.Getenv("PKUDISK_TEST_MMAP_HASH") {
 		t.Fatal("mapped image bytes differ")
+	}
+}
+
+func TestWinFspMountedReadReturnsWhileRangeFills(t *testing.T) {
+	core, probe := readCacheTest(t, 16<<20)
+	data := bytes.Repeat([]byte{0x7b}, 5<<20)
+	seedFile(t, probe.memoryBackend, "progressive.bin", data)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	probe.stream = func(ctx context.Context, _ anyshare.Entry, off, length int64, dest io.Writer) error {
+		if off != 0 || length != int64(len(data)) {
+			return fmt.Errorf("unexpected native read range")
+		}
+		if _, err := dest.Write(data[:1<<20]); err != nil {
+			return err
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		_, err := dest.Write(data[1<<20:])
+		return err
+	}
+	adapter := NewWinFsp(context.Background(), core)
+	root := mountWinFspTest(t, adapter)
+	file, err := os.Open(filepath.Join(root, "progressive.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	done := make(chan error, 1)
+	go func() {
+		got := make([]byte, 64<<10)
+		_, err := file.ReadAt(got, 0)
+		if err == nil && !bytes.Equal(got, data[:len(got)]) {
+			err = fmt.Errorf("native prefix bytes differ")
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("native 64 KiB read waited for a blocked 5 MiB range")
+	}
+	unblock()
+	got := make([]byte, len(data))
+	if _, err := file.ReadAt(got, 0); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("native full streamed read failed", err)
+	}
+	if probe.reads.Load() != 1 {
+		t.Fatal("native progressive reads duplicated the range fetch")
 	}
 }

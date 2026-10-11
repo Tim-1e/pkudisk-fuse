@@ -68,6 +68,19 @@ func (b *memoryBackend) ReadAt(ctx context.Context, e anyshare.Entry, d []byte, 
 	}
 	return bytes.NewReader(b.data[e.ID]).ReadAt(d, off)
 }
+
+func (b *memoryBackend) ReadRange(ctx context.Context, e anyshare.Entry, off, length int64, dest io.Writer) error {
+	data := make([]byte, length)
+	n, err := b.ReadAt(ctx, e, data, off)
+	if err == io.EOF && n == len(data) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = dest.Write(data[:n])
+	return err
+}
 func (b *memoryBackend) Download(ctx context.Context, e anyshare.Entry, w io.Writer) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

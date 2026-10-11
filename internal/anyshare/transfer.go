@@ -127,43 +127,52 @@ func (c *Client) downloadRanges(ctx context.Context, e Entry, dest io.Writer, ra
 	}
 	for off := int64(0); off < e.Size; {
 		length := min(rangeSize, e.Size-off)
-		end := off + length - 1
-		auth, err := c.downloadRequest(ctx, e)
-		if err != nil {
+		if err := c.ReadRange(ctx, e, off, length, dest); err != nil {
 			return err
 		}
-		resp, err := c.signed(ctx, auth, nil, 0, http.Header{"Range": {fmt.Sprintf("bytes=%d-%d", off, end)}})
-		if err != nil {
-			return err
-		}
+		off += length
+	}
+	return nil
+}
 
-		if resp.StatusCode == http.StatusPartialContent {
-			var first, last, total int64
-			if _, err := fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total); err != nil || first != off || last != end || total != e.Size {
-				resp.Body.Close()
-				return errors.New("object storage returned an inconsistent byte range")
-			}
-		} else if resp.StatusCode != http.StatusOK || off != 0 || length != e.Size {
-			resp.Body.Close()
-			return errors.New("object storage did not honor the requested byte range")
+// ReadRange streams one revision-specific range. Validate the headers before
+// exposing bytes to the writer, and accept completion only after an exact body.
+func (c *Client) ReadRange(ctx context.Context, e Entry, off, length int64, dest io.Writer) error {
+	if off < 0 || length < 0 || off > e.Size || length > e.Size-off {
+		return errors.New("invalid download range")
+	}
+	if length == 0 {
+		return nil
+	}
+	end := off + length - 1
+	auth, err := c.downloadRequest(ctx, e)
+	if err != nil {
+		return err
+	}
+	resp, err := c.signed(ctx, auth, nil, 0, http.Header{"Range": {fmt.Sprintf("bytes=%d-%d", off, end)}})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusPartialContent {
+		var first, last, total int64
+		if _, err := fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total); err != nil || first != off || last != end || total != e.Size {
+			return errors.New("object storage returned an inconsistent byte range")
 		}
-		if resp.ContentLength >= 0 && resp.ContentLength != length {
-			resp.Body.Close()
-			return errors.New("download range length differs from the selected revision")
-		}
-
-		n, copyErr := io.CopyN(dest, resp.Body, length)
-		if copyErr != nil {
-			resp.Body.Close()
-			return copyErr
-		}
-		var extra [1]byte
-		extraN, extraErr := io.ReadFull(resp.Body, extra[:])
-		resp.Body.Close()
-		if n != length || extraN != 0 || !errors.Is(extraErr, io.EOF) {
-			return errors.New("incomplete or oversized download range")
-		}
-		off += n
+	} else if resp.StatusCode != http.StatusOK || off != 0 || length != e.Size {
+		return errors.New("object storage did not honor the requested byte range")
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength != length {
+		return errors.New("download range length differs from the selected revision")
+	}
+	n, err := io.CopyN(dest, resp.Body, length)
+	if err != nil {
+		return err
+	}
+	var extra [1]byte
+	extraN, extraErr := io.ReadFull(resp.Body, extra[:])
+	if n != length || extraN != 0 || !errors.Is(extraErr, io.EOF) {
+		return errors.New("incomplete or oversized download range")
 	}
 	return nil
 }

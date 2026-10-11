@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
@@ -25,11 +26,20 @@ type cachedFile struct {
 }
 
 type readFlight struct {
-	done chan struct{}
-	data []byte
-	err  error
-	off  int64
-	keys []cacheKey
+	mu          sync.Mutex
+	done        chan struct{}
+	changed     chan struct{}
+	data        []byte
+	err         error
+	off, length int64
+	written     int
+	finished    bool
+	waiters     int
+	useful      bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	stop        func() bool
+	keys        []cacheKey
 }
 
 func fileKey(entry anyshare.Entry, off int64) cacheKey {
@@ -166,16 +176,33 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 	key := fileKey(entry, start)
 	f.opts.Trace.Printf(ctx, "check read cache: offset=%d; waiting for cache lock", off)
 	f.budgetMu.Lock()
+	if f.closed {
+		f.budgetMu.Unlock()
+		return 0, context.Canceled
+	}
 	if n, err, ok := f.cachedReadLocked(ctx, entry, data, off, key); ok {
 		f.budgetMu.Unlock()
 		f.opts.Trace.Printf(ctx, "cache read returned=%s; %s", diagnostic.Size(n), diagnostic.Status(err))
 		return n, err
 	}
 	flight := f.readFlights[key]
+	if flight != nil {
+		flight.mu.Lock()
+		abandoned := flight.waiters == 0 && flight.ctx.Err() != nil
+		flight.mu.Unlock()
+		if abandoned {
+			for _, key := range flight.keys {
+				if f.readFlights[key] == flight {
+					delete(f.readFlights, key)
+				}
+			}
+			flight = nil
+		}
+	}
 	owner := flight == nil
 	length := min(blockSize, entry.Size-start)
 	if owner {
-		flight = &readFlight{done: make(chan struct{}), off: start, keys: []cacheKey{key}}
+		flight = &readFlight{done: make(chan struct{}), changed: make(chan struct{}), off: start, keys: []cacheKey{key}}
 		f.readFlights[key] = flight
 		// Only batch uncached, unclaimed neighbours. Pending writes reduce the
 		// available read budget, so speculative data cannot crowd them out.
@@ -196,77 +223,33 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 			f.readFlights[neighbour] = flight
 			length += size
 		}
+		flight.length = length
+		flight.ctx, flight.cancel = context.WithTimeout(context.WithoutCancel(ctx), f.opts.IOTimeout)
+		flight.stop = context.AfterFunc(f.readCtx, flight.cancel)
+		f.readWG.Add(1)
 	}
+	flight.mu.Lock()
+	flight.waiters++
+	flight.mu.Unlock()
 	f.budgetMu.Unlock()
 	if owner {
-		ctx, finish := f.opts.Trace.Begin(ctx, "fetch file=%q id=%q revision=%q offset=%d length=%s blocks=%d", entry.Name, entry.ID, entry.Rev, start, diagnostic.Size(length), len(flight.keys))
-		defer func() { finish("%s", diagnostic.Status(flight.err)) }()
-		f.opts.Trace.Printf(ctx, "cache miss; waiting for read slot (active=%d limit=%d)", len(f.readSlots), cap(f.readSlots))
-		err := f.acquireRead(ctx)
-		admitted := err == nil
-		var n int
-		if err == nil {
-			f.opts.Trace.Printf(ctx, "read slot acquired; fetching remote bytes %d-%d", start, start+length-1)
-			// Allocate only after admission; queued reads hold no fetch buffer.
-			flight.data = make([]byte, length)
-			n, err = f.backend.ReadAt(ctx, entry, flight.data, start)
-		}
-		if err == io.EOF && n == len(flight.data) {
-			err = nil
-		}
-		if err == nil && n != len(flight.data) {
-			err = io.ErrUnexpectedEOF
-		}
-		flight.err = err
-		f.opts.Trace.Printf(ctx, "remote range finished: received=%s; %s; waiting for cache lock", diagnostic.Size(n), diagnostic.Status(err))
-		f.budgetMu.Lock()
-		if err == nil && f.cacheRoomLocked(int64(n)) {
-			file, createErr := os.CreateTemp(f.cacheDir, "read-*.data")
-			if createErr == nil {
-				f.opts.Trace.Printf(ctx, "retaining range in disk cache: size=%s", diagnostic.Size(n))
-				_, writeErr := file.Write(flight.data)
-				closeErr := file.Close()
-				if writeErr == nil && closeErr == nil {
-					f.cacheBytes += int64(n)
-					f.readBytes += int64(n)
-					element := f.readLRU.PushBack(cachedFile{key: key, path: file.Name(), size: int64(n), keys: flight.keys})
-					for _, key := range flight.keys {
-						f.readFiles[key] = element
-					}
-					f.opts.Trace.Printf(ctx, "cache range retained: used=%s clean=%s", diagnostic.Size(f.cacheBytes), diagnostic.Size(f.readBytes))
-				} else {
-					f.opts.Trace.Printf(ctx, "disk retention failed; range still returned to reader")
-					os.Remove(file.Name())
-				}
-			}
-			if createErr != nil {
-				f.opts.Trace.Printf(ctx, "disk cache file creation failed: %s; returning fetched bytes without retention", diagnostic.Status(createErr))
-			}
-		} else if err == nil {
-			f.opts.Trace.Printf(ctx, "range not retained: shared cache could not free required space; returning fetched bytes")
-		}
-		for _, key := range flight.keys {
-			delete(f.readFlights, key)
-		}
-		close(flight.done)
-		f.budgetMu.Unlock()
-		if admitted {
-			<-f.readSlots
-		}
+		go f.fetchRange(entry, flight)
 	} else {
-		_, finish := f.opts.Trace.Begin(ctx, "wait for shared fetch file=%q offset=%d", entry.Name, flight.off)
-		select {
-		case <-flight.done:
-			finish("%s", diagnostic.Status(flight.err))
-		case <-ctx.Done():
-			finish("%s", diagnostic.Status(ctx.Err()))
-			return 0, ctx.Err()
-		}
+		f.opts.Trace.Printf(ctx, "joining shared streaming fetch file=%q offset=%d", entry.Name, flight.off)
 	}
-	if flight.err != nil {
-		return 0, flight.err
+	n, err := flight.read(ctx, f.opts.Trace, data, off)
+	flight.mu.Lock()
+	flight.waiters--
+	if err == nil {
+		flight.useful = true
+	} else if flight.waiters == 0 && !flight.useful {
+		// Abandoned queued/cold work has served nobody and need not consume a
+		// request or slot. A fetch that served a prefix keeps filling the cache.
+		f.opts.Trace.Printf(ctx, "last waiter left unused cold work; cancelling shared fetch")
+		flight.cancel()
 	}
-	return copy(data, flight.data[off-flight.off:]), nil
+	flight.mu.Unlock()
+	return n, err
 }
 
 func (f *FileSystem) readAt(ctx context.Context, entry anyshare.Entry, data []byte, off, fetchSize int64) (int, error) {

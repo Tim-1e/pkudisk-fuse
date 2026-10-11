@@ -22,6 +22,7 @@ type readProbe struct {
 	*memoryBackend
 	reads, downloads atomic.Int64
 	read             func(context.Context, anyshare.Entry, []byte, int64) (int, error)
+	stream           func(context.Context, anyshare.Entry, int64, int64, io.Writer) error
 }
 
 func (b *readProbe) ReadAt(ctx context.Context, e anyshare.Entry, data []byte, off int64) (int, error) {
@@ -30,6 +31,25 @@ func (b *readProbe) ReadAt(ctx context.Context, e anyshare.Entry, data []byte, o
 		return b.read(ctx, e, data, off)
 	}
 	return b.memoryBackend.ReadAt(ctx, e, data, off)
+}
+
+func (b *readProbe) ReadRange(ctx context.Context, e anyshare.Entry, off, length int64, dest io.Writer) error {
+	if b.stream != nil {
+		b.reads.Add(1)
+		return b.stream(ctx, e, off, length, dest)
+	}
+	data := make([]byte, length)
+	n, err := b.ReadAt(ctx, e, data, off)
+	if err == io.EOF && n == len(data) {
+		err = nil
+	}
+	if err == nil && n != len(data) {
+		err = io.ErrUnexpectedEOF
+	}
+	if err == nil {
+		_, err = dest.Write(data)
+	}
+	return err
 }
 
 func (b *readProbe) Download(ctx context.Context, e anyshare.Entry, out io.Writer) error {
@@ -75,6 +95,7 @@ func TestReadCacheDecoderReadsAndReopen(t *testing.T) {
 			}
 		}
 	}
+	f.readWG.Wait()
 	if b.reads.Load() != 1 || f.cacheBytes != int64(len(data)) {
 		t.Fatalf("small reads/reopens fetched %d ranges, charged %d bytes", b.reads.Load(), f.cacheBytes)
 	}

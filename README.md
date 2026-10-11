@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.2` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.3` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -162,9 +162,11 @@ PKUDISK_TEST_CREDENTIALS="$HOME/.config/pkudisk-fuse/credentials.json" \
 
 ## File behavior
 
-Mount reads fetch files up to 16 MiB whole on first access, if the file fits in the configured disk budget. A 5 MiB photo uses one authorization call and one data GET, including when a viewer starts at its tail. Larger files start with 4 MiB ranges. Consecutive reads double the fetch size up to 16 MiB; seeking resets it to the base range. A read spanning adjacent blocks is batched into one range when the batch fits. Already cached or in-flight neighbours stop the batch, avoiding duplicate transfers. Read-ahead runs as part of the requested fetch; larger batches take longer to complete but reduce subsequent round trips.
+Mount reads fetch files up to 16 MiB whole on first access, if the file fits in the configured disk budget. A 5 MiB photo uses one authorization call and one data GET, including when a viewer starts at its tail. Larger files start with 4 MiB ranges. Consecutive reads double the fetch size up to 16 MiB; seeking resets it to the base range. A read spanning adjacent blocks is batched into one range when the batch fits. Already cached or in-flight neighbours stop the batch, avoiding duplicate transfers.
 
-Fetches are limited to four at a time per mount. Overlapping requests share one fetch, and queued reads allocate no fetch buffer before admission. Metadata queries and warm reads proceed independently of network I/O and its queue. Repeated reads and reopening the same revision reuse the private disk cache. Memory-mapped reads are supported on Linux, macOS and Windows.
+Requested bytes return as soon as their part of the shared stream arrives. A 64 KiB header read does not wait for the rest of a 16 MiB batch. The fetch continues filling the bounded range, and subsequent reads reuse its received prefix or wait only for their missing bytes. Reads reaching the range end wait for final byte-count/EOF validation. Only complete, verified ranges enter the disk cache; interrupted ranges are discarded. Full decoding or a seek near the end still needs the bytes leading up to that position in the selected range.
+
+Fetches are limited to four at a time per mount. Overlapping requests share one fetch, and queued reads allocate no fetch buffer before admission. Cancelling one waiter leaves a useful shared transfer running; an unused cold transfer is cancelled when its last waiter leaves. Unmount cancels and joins active fills before removing the cache. Metadata queries and warm reads proceed independently of network I/O and its queue. Repeated reads and reopening the same revision reuse the private disk cache. Memory-mapped reads are supported on Linux, macOS and Windows.
 
 Tune the policy with the same mount flags on all platforms:
 
@@ -194,7 +196,13 @@ For a slow or frozen application, capture mount decisions and requests in a log 
 .\pkudisk-fuse.exe mount P: --verbose 2> mount.log
 ```
 
-On Linux/macOS use an empty directory as the mountpoint. `--verbose` logs to stderr with timestamps and numbered `START`/`END` operations. Child operations identify their parent; an unmatched `START` is still pending. The log shows file paths/handles, metadata refreshes, file/cache lock waits, whole-file versus sequential/range planning, cache hits/misses, shared fetches, queue admission, eviction, retention, uploads and unmount. HTTP entries show endpoint hosts, trusted byte ranges, connection reuse/setup, response status, first body bytes and completion timing. Waiting for response headers is distinguished from waiting for the body.
+For Windows PowerShell 5, redirect through `cmd.exe` to preserve native UTF-8 text without PowerShell's error-record wrapping and UTF-16 conversion:
+
+```powershell
+cmd.exe /d /c ".\pkudisk-fuse.exe mount P: --verbose 2>mount.log"
+```
+
+On Linux/macOS use an empty directory as the mountpoint. `--verbose` logs to stderr with timestamps and numbered `START`/`END` operations. Child operations identify their parent; an unmatched `START` is still pending. A fetch can remain pending after its header read returns while its suffix continues filling; the log marks this as `requested bytes ready`. The log shows file paths/handles, metadata refreshes, file/cache lock waits, whole-file versus sequential/range planning, cache hits/misses, shared fetches, queue admission, eviction, retention, uploads and unmount. HTTP entries show endpoint hosts, trusted byte ranges, connection reuse/setup, response status, first body bytes and completion timing. Waiting for response headers is distinguished from waiting for the body.
 
 Logs include file names/IDs and local paths, but omit credentials, cookies, request/response bodies, URL queries and signed object paths. Diagnostics are disabled by default. `--debug` can additionally enable the filesystem driver's raw protocol messages. These logs report requests reaching this process; operations stalled inside Photos or the Windows driver before a callback cannot appear in the application log.
 

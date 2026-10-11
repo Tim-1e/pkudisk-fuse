@@ -119,6 +119,7 @@ func TestReadPolicyBatchesDemandAndOverlappingReaders(t *testing.T) {
 	group.Go(func() { checkGeneratedRead(t, node, make([]byte, 32), 2048) })
 	close(release)
 	group.Wait()
+	f.readWG.Wait() // Prefix reads finish before the complete batch is retained.
 	if b.reads.Load() != 1 || f.cacheBytes != 3072 {
 		t.Fatalf("overlapping demand used %d fetches, cached %d bytes", b.reads.Load(), f.cacheBytes)
 	}

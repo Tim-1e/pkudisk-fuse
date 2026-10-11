@@ -27,6 +27,7 @@ type Backend interface {
 	Stat(context.Context, anyshare.Entry) (anyshare.Entry, error)
 	Can(context.Context, string, string) (bool, error)
 	ReadAt(context.Context, anyshare.Entry, []byte, int64) (int, error)
+	ReadRange(context.Context, anyshare.Entry, int64, int64, io.Writer) error
 	Download(context.Context, anyshare.Entry, io.Writer) error
 	Upload(context.Context, string, string, *anyshare.Entry, io.ReaderAt, int64, time.Time) (anyshare.Entry, error)
 	Mkdir(context.Context, string, string) (anyshare.Entry, error)
@@ -77,6 +78,10 @@ type FileSystem struct {
 	readFiles   map[cacheKey]*list.Element
 	readLRU     list.List
 	readFlights map[cacheKey]*readFlight
+	readCtx     context.Context
+	cancelReads context.CancelFunc
+	readWG      sync.WaitGroup
+	closed      bool // Protected by budgetMu, alongside flight registration.
 	nodes       sync.Map
 	root        *Node
 }
@@ -134,9 +139,11 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 		return nil, err
 	}
 	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, listFlights: make(map[string]*listFlight), readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
+	f.readCtx, f.cancelReads = context.WithCancel(context.Background())
 	opts.Trace.Printf(context.Background(), "mount policy: whole-file=%s block=%s read-ahead=%s concurrency=%d disk-budget=%s metadata-TTL=%s I/O-timeout=%s read-only=%t", diagnostic.Size(read.WholeFile), diagnostic.Size(read.BlockSize), diagnostic.Size(read.ReadAhead), read.Concurrency, diagnostic.Size(opts.CacheLimit), opts.TTL, opts.IOTimeout, opts.ReadOnly)
 	if opts.Root != nil {
 		if !opts.Root.Dir {
+			f.cancelReads()
 			os.Remove(cache)
 			return nil, syscall.ENOTDIR
 		}
@@ -385,6 +392,13 @@ func (n *Node) disposeLocked() {
 func (f *FileSystem) Close() (result error) {
 	_, finish := f.opts.Trace.Begin(context.Background(), "close mount cache")
 	defer func() { finish("%s", diagnostic.Status(result)) }()
+	f.budgetMu.Lock()
+	f.closed = true
+	f.cancelReads()
+	f.budgetMu.Unlock()
+	// Readers may have returned while their shared range continues filling.
+	// Stop those transfers before disposing nodes or deleting the mount cache.
+	f.readWG.Wait()
 	dirty := 0
 	f.nodes.Range(func(key, value any) bool {
 		n := key.(*Node)

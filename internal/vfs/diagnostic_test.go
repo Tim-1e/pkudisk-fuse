@@ -41,6 +41,7 @@ func TestVerboseReadExplainsFetchHitAndPromotion(t *testing.T) {
 		if _, err := node.readAt(context.Background(), make([]byte, 32), off); err != nil {
 			t.Fatal(err)
 		}
+		f.readWG.Wait() // The next read checks reuse of a retained complete range.
 	}
 	node.mu.Lock()
 	err := node.ensureCacheLocked(context.Background(), false)
