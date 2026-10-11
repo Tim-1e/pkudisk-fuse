@@ -1,0 +1,53 @@
+# Platform support
+
+The native CLI and TUI build for Linux, macOS and Windows on amd64 and arm64 without CGO. Account management, browsing, uploads and downloads do not need a filesystem driver.
+
+| Platform | Mount backend | Requirement |
+| --- | --- | --- |
+| Linux | go-fuse | `/dev/fuse` and `fusermount3` or `fusermount` (normally the `fuse3` package) |
+| macOS | go-fuse / macFUSE | [macFUSE](https://macfuse.github.io/) with its kernel extension enabled; the FSKit backend is not used |
+| Windows | WinFsp through cgofuse | [WinFsp](https://winfsp.dev/rel/) matching the binary architecture; WSL is not required |
+
+The executable checks mount dependencies before opening a saved account or asking for credentials. `mount --help` contains instructions for the current platform.
+
+## Mount examples
+
+Linux and macOS:
+
+```sh
+mkdir -p ~/PKUNetDisk
+pkudisk-fuse mount ~/PKUNetDisk
+```
+
+Windows, from PowerShell or Command Prompt, with an unused drive letter:
+
+```powershell
+pkudisk-fuse.exe account add
+pkudisk-fuse.exe mount P:
+```
+
+An empty directory can also be used as a Windows mountpoint. Ctrl-C unmounts the filesystem. Other mount flags, including `--root`, `--read-only`, `--cache-limit` and `--io-timeout`, have the same meaning on each platform.
+
+Both drivers use the shared AnyShare backend and write-cache implementation. Random writes, append and truncation are cached locally and published on flush/fsync. Revision checks prevent overwriting a concurrent remote edit; failed uploads retain recovery journals. Windows uses WinFsp's POSIX operation callbacks and maps remote errors to the driver's errno values.
+
+Remote paths always use forward slashes, including on Windows. Local paths use the host's syntax. `~`, `~/...` and `~\...` expand to the current user's home directory. Windows reserved names, alternate-data-stream syntax, backslashes within a remote filename and names ending in a dot or space cannot be used as local filenames. The mount omits such names; CLI `ls` can show them, and `download REMOTE EXPLICIT-LOCAL-FILE` can save their contents under a valid name.
+
+## Account storage and permissions
+
+| Platform | Default account file | Default mount-cache parent |
+| --- | --- | --- |
+| Linux | `~/.config/pkudisk-fuse/accounts.json` | `~/.cache/pkudisk-fuse` |
+| macOS | `~/Library/Application Support/pkudisk-fuse/accounts.json` | `~/Library/Caches/pkudisk-fuse` |
+| Windows | `%APPDATA%\pkudisk-fuse\accounts.json` | `%LOCALAPPDATA%\pkudisk-fuse` |
+
+`XDG_CONFIG_HOME` and `XDG_CACHE_HOME` override the parent directories on all three platforms. Files remain bound to the selected saved account and server.
+
+Unix requires current-user ownership, mode 0600 for credential files and mode 0700 for their directories. Windows creates a protected ACL allowing the current user and SYSTEM only, checks that ACL and ownership before reading credentials, and rejects reparse points. A POSIX `chmod` command does not substitute for a private Windows ACL. Interactive `account add` creates the appropriate permissions automatically; `--password-stdin` is another way to avoid preparing a credential file.
+
+Store updates and refresh-token rotation use process locks (`flock` on Unix; `LockFileEx` on Windows). Replacement files are synced and installed using the platform's rename operation; Windows uses `MoveFileEx` with write-through. Downloads install only after validation, and refuse to overwrite a destination created during the transfer unless `--overwrite` was requested.
+
+## Validation
+
+CI runs native Go tests on Linux, macOS and Windows and compiles the six OS/architecture combinations. Linux runs the race detector and requires its kernel FUSE tests to execute. Windows installs WinFsp and requires an actual mounted-drive test with writes, reads, Chinese filenames, rename and removal. Additional Windows callback tests check random writes, truncation, append, cache limits, revision conflicts and failed-upload recovery. Permission tests verify private ACLs and process-lock contention.
+
+The macOS hosted runner tests the native CLI/storage code and compiles the go-fuse adapter. Kernel-extension approval is unavailable on the hosted runner, so macFUSE mounting needs acceptance on a Mac with the driver enabled.

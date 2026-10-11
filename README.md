@@ -1,8 +1,8 @@
 # pkudisk-fuse
 
-`pkudisk-fuse` mounts the files that the current user can access in PKU NetDisk (AnyShare) as a Linux FUSE filesystem and can upload or download files without a mount. It is written in Go and uses the same HTTPS API and object-storage flow as the installed AnyShare 7.0.6 client.
+`pkudisk-fuse` browses, uploads, downloads and mounts PKU NetDisk (AnyShare) on Linux, macOS and Windows. Linux/macOS mounts use FUSE; Windows mounts use WinFsp. The CLI and TUI work without a filesystem driver. It is written in Go and uses the same HTTPS API and object-storage flow as the official AnyShare 7.0.6 client. See [platform support](docs/platform-support.md) for driver requirements, paths and validation.
 
-The login uses **PKU unified authentication (IAAA)**. The password is RSA encrypted with the public key served by the login page. Saved accounts are stored in an owner-only `0600` file below the user configuration directory; the password and renewable AnyShare session are used to resume a login without prompting. NetDisk local accounts are intentionally not supported.
+The login uses **PKU unified authentication (IAAA)**. The password is RSA encrypted with the public key served by the login page. Saved accounts are stored in a private file below the user configuration directory (0600 on Unix; a restricted ACL on Windows); the password and renewable AnyShare session are used to resume a login without prompting. NetDisk local accounts are intentionally not supported.
 
 ## Build
 
@@ -15,6 +15,8 @@ make check
 ```
 
 The binary is `bin/pkudisk-fuse`. No part of the repository contains an account, password, token, cookie, or private key.
+
+Without Make, build directly with `go build -trimpath -o pkudisk-fuse ./cmd/pkudisk-fuse`; on Windows use `-o pkudisk-fuse.exe`. Cross-builds for Linux/macOS/Windows amd64 and arm64 support `CGO_ENABLED=0`. Native Windows mounts require WinFsp to be installed separately.
 
 ## Built-in help
 
@@ -38,12 +40,14 @@ Exit codes are `0` for success, `1` for an execution failure, and `2` for invali
 
 ## Authentication
 
-The simplest interactive mount prompts for the campus username and hides the password input:
+An interactive mount prompts for the campus username and hides the password input. On Linux/macOS:
 
 ```sh
 mkdir -m 700 ~/mnt/pkudisk
 bin/pkudisk-fuse mount ~/mnt/pkudisk
 ```
+
+On Windows, after installing WinFsp, use an unused drive letter: `pkudisk-fuse.exe mount P:`. `pkudisk-fuse account add` and `pkudisk-fuse tui` work on each platform without a mount driver.
 
 For a non-interactive command, use an owner-only password file. The file must be a regular file owned by the current user with mode `0600`:
 

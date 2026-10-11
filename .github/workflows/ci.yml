@@ -46,7 +46,9 @@ jobs:
           'PKUDISK_FUSE_REQUIRE_KERNEL=1' >> $env:GITHUB_ENV
       - name: Check formatting
         shell: bash
-        run: test -z "$(gofmt -l cmd internal)"
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then printf '%s\n' "$unformatted"; exit 1; fi
       - name: Vet
         run: go vet ./...
       - name: Test with race detector

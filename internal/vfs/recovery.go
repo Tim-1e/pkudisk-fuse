@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"pkudisk-fuse/internal/anyshare"
+	"pkudisk-fuse/internal/localfile"
 	"sort"
 	"time"
 )
@@ -37,7 +38,7 @@ func RecoveryFiles(dir string) ([]RecoveryRecord, error) {
 		if err = json.Unmarshal(b, &r); err != nil {
 			return err
 		}
-		if filepath.Base(r.Data) != r.Data || r.Data == "" {
+		if !localfile.ValidName(r.Data) {
 			return errors.New("invalid recovery data path")
 		}
 		r.Data = filepath.Join(filepath.Dir(path), r.Data)
