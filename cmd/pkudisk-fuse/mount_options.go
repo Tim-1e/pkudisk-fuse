@@ -18,6 +18,10 @@ type mountOptions struct {
 	ttl, timeout, refreshInterval         time.Duration
 	read                                  vfs.ReadOptions
 	trace                                 *diagnostic.Logger
+	background                            bool
+	workerHandles                         string
+	ready                                 func() error
+	driverOptions                         []string
 }
 
 // Use the same byte syntax in all mount size flags, including numeric bytes.

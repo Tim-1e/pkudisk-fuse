@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 	"github.com/thezzisu/pkudisk-fuse/internal/auth"
@@ -23,6 +25,15 @@ type mountSource struct {
 	backend  vfs.Backend
 	root     *anyshare.Entry
 	sessions []mountSession
+}
+
+func runMount(cmd *cobra.Command, credentials authFlags, opts mountOptions) error {
+	source, err := prepareMount(cmd.Context(), credentials, opts)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	return mountFileSystem(cmd.Context(), source, opts, cmd.ErrOrStderr())
 }
 
 // Both drivers share account selection, root validation and session lifetime.

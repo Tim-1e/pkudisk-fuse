@@ -153,6 +153,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 	add("files", newRemoteCommand("upload"), newRemoteCommand("download"), newCopyCommand(), newRemoteCommand("extract"))
 	add("sharing", newShareCommand(), newLinkCommand())
 	add("local", newRemoteCommand("mount"), newRecoverCommand())
+	add("local", platformMountCommands()...)
 	add("account", newAccountCommand(), newQuotaCommand())
 	add("tools", newCompletionCommand())
 	add("tools", &cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
@@ -265,7 +266,7 @@ continue because the official protocol exposes no job cancellation endpoint.
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = `Mount PKU NetDisk as a filesystem. The process stays in the foreground.
+		cmd.Long = `Mount PKU NetDisk as a filesystem. By default the process stays in the foreground.
 Omit --root to expose all accessible libraries of the selected account.
 --all-accounts mounts every saved account under its own first-level directory,
 named after the saved account. It cannot be combined with --account, --root,
@@ -318,6 +319,7 @@ but omit credentials, request bodies and signed URL paths/queries.
 		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")
 		f.BoolVar(&mount.debug, "debug", false, "print FUSE protocol diagnostics to stderr")
 		f.BoolVarP(&mount.verbose, "verbose", "v", false, "explain mount operations, cache/fetch decisions and HTTP timing on stderr; credentials and signed URLs are omitted")
+		addPlatformMountFlags(cmd, &mount)
 	}
 	credentials.add(cmd.Flags())
 	if name == "ls" || name == "upload" || name == "download" || name == "mount" || name == "tui" {
@@ -376,12 +378,7 @@ but omit credentials, request bodies and signed URL paths/queries.
 		credentials.announce = name != "tui"
 		if name == "mount" {
 			mount.mountpoint, mount.timeout = args[0], timeout
-			source, err := prepareMount(cmd.Context(), credentials, mount)
-			if err != nil {
-				return err
-			}
-			defer source.Close()
-			return mountFileSystem(cmd.Context(), source, mount, cmd.ErrOrStderr())
+			return runPlatformMount(cmd, credentials, mount)
 		}
 		session, server, account, err := authenticate(cmd.Context(), credentials)
 		if err != nil {
