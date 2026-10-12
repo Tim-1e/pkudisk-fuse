@@ -5,24 +5,82 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/url"
 	"strings"
 	"time"
 )
 
-// Quota returns the server-side allocation for the authenticated account.
+// Quota aggregates the libraries accessible to the authenticated account.
 func (c *Client) Quota(ctx context.Context) (Quota, error) {
-	var quota Quota
-	b, err := c.request(ctx, "GET", "/efast/v1/quota/user", nil)
+	return c.StorageQuota(ctx, "", false)
+}
+
+// LibraryQuota reads the allocation and usage of one library, including shared
+// custom/department libraries that do not consume the user's personal quota.
+func (c *Client) LibraryQuota(ctx context.Context, id string) (Quota, error) {
+	var response struct {
+		Allocated *int64 `json:"allocated"`
+		Used      *int64 `json:"used"`
+	}
+	b, err := c.request(ctx, "GET", "/efast/v1/quota/doc-lib/"+url.PathEscape(id), nil)
 	if err != nil {
 		return Quota{}, err
 	}
-	if err := json.Unmarshal(b, &quota); err != nil {
+	if err := json.Unmarshal(b, &response); err != nil {
 		return Quota{}, err
 	}
-	if quota.Allocated < 0 || quota.Used < 0 || quota.Used > quota.Allocated {
+	if response.Allocated == nil || response.Used == nil || *response.Allocated < 0 || *response.Used < 0 {
 		return Quota{}, errors.New("server returned an invalid storage quota")
 	}
-	return quota, nil
+	return Quota{Allocated: *response.Allocated, Used: *response.Used}, nil
+}
+
+// StorageQuota describes mounted capacity. Read-only libraries contribute only
+// their used bytes to both counters. An optional root restricts the sum to its
+// containing library and checks write permission at that selected folder.
+func (c *Client) StorageQuota(ctx context.Context, root string, readOnly bool) (Quota, error) {
+	roots, err := c.Roots(ctx)
+	if err != nil {
+		return Quota{}, err
+	}
+	var total Quota
+	for _, library := range roots {
+		if root != "" && library.ID != LibraryID(root) {
+			continue
+		}
+		quota, err := c.LibraryQuota(ctx, library.ID)
+		if err != nil {
+			return Quota{}, fmt.Errorf("read library quota: %w", err)
+		}
+		writable := false
+		if !readOnly {
+			selector := library.ID
+			if root != "" {
+				selector = root
+			}
+			allow, err := c.permissions(ctx, selector)
+			if err != nil {
+				return Quota{}, fmt.Errorf("check library write permission: %w", err)
+			}
+			for _, permission := range allow {
+				if permission == "create" || permission == "modify" {
+					writable = true
+				}
+			}
+		}
+		if !writable {
+			quota.Allocated = quota.Used
+		} else {
+			quota.Allocated = max(quota.Allocated, quota.Used)
+		}
+		if total.Allocated > math.MaxInt64-quota.Allocated || total.Used > math.MaxInt64-quota.Used {
+			return Quota{}, errors.New("combined library quota exceeds the supported byte count")
+		}
+		total.Allocated += quota.Allocated
+		total.Used += quota.Used
+	}
+	return total, nil
 }
 
 type SearchEntry struct {
@@ -58,12 +116,13 @@ func (c *Client) Search(ctx context.Context, keyword, scope string, limit int) (
 	}
 	var response struct {
 		Files []struct {
-			DocID     string `json:"doc_id"`
-			Basename  string `json:"basename"`
-			Extension string `json:"extension"`
-			Size      int64  `json:"size"`
-			Parent    string `json:"parent_path"`
-			Modified  string `json:"modified_at"`
+			DocID     string          `json:"doc_id"`
+			Basename  string          `json:"basename"`
+			Extension string          `json:"extension"`
+			Size      int64           `json:"size"`
+			Parent    string          `json:"parent_path"`
+			Modified  json.RawMessage `json:"modified_at"`
+			Created   json.RawMessage `json:"created_at"`
 		} `json:"files"`
 		Hits int `json:"hits"`
 		Next int `json:"next"`
@@ -80,19 +139,47 @@ func (c *Client) Search(ctx context.Context, keyword, scope string, limit int) (
 	if err := c.post(ctx, "/ecosearch/v1/file-search", body, &response); err != nil {
 		return SearchResult{}, err
 	}
-	result := SearchResult{Hits: response.Hits, Next: response.Next}
+	result := SearchResult{Files: []SearchEntry{}, Hits: response.Hits, Next: response.Next}
 	for _, file := range response.Files {
-		if file.DocID == "" || !ValidName(file.Basename) || file.Size < 0 {
+		if file.DocID == "" || file.Size < -1 {
 			return SearchResult{}, errors.New("server returned an invalid search result")
 		}
 		name := file.Basename + file.Extension
 		if !ValidName(name) {
 			return SearchResult{}, errors.New("server returned an invalid search filename")
 		}
-		modified, _ := time.Parse(time.RFC3339Nano, file.Modified)
-		result.Files = append(result.Files, SearchEntry{Entry: Entry{ID: file.DocID, Name: name, Size: file.Size, Modified: modified}, Path: file.Parent, Extension: file.Extension})
+		modified, err := searchTime(file.Modified)
+		if err != nil {
+			return SearchResult{}, fmt.Errorf("server returned an invalid modified_at timestamp: %w", err)
+		}
+		created, err := searchTime(file.Created)
+		if err != nil {
+			return SearchResult{}, fmt.Errorf("server returned an invalid created_at timestamp: %w", err)
+		}
+		result.Files = append(result.Files, SearchEntry{Entry: Entry{ID: file.DocID, Name: name, Size: file.Size, Dir: file.Size == -1, Modified: modified, Created: created}, Path: file.Parent, Extension: file.Extension})
 	}
 	return result, nil
+}
+
+func searchTime(raw json.RawMessage) (time.Time, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return time.Time{}, nil
+	}
+	if raw[0] == '"' {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return time.Time{}, err
+		}
+		if value == "" {
+			return time.Time{}, nil
+		}
+		return time.Parse(time.RFC3339Nano, value)
+	}
+	var micros int64
+	if err := json.Unmarshal(raw, &micros); err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMicro(micros).UTC(), nil
 }
 
 type CopyProgress struct {
@@ -106,6 +193,9 @@ type CopyProgress struct {
 func (c *Client) Copy(ctx context.Context, source, destination Entry, observe func(CopyProgress)) (Entry, error) {
 	if source.ID == "" || destination.ID == "" || !destination.Dir {
 		return Entry{}, errors.New("copy requires a source and destination folder")
+	}
+	if source.Dir && (source.ID == destination.ID || strings.HasPrefix(destination.ID, source.ID+"/")) {
+		return Entry{}, errors.New("copy destination cannot be inside the source directory")
 	}
 	ondup := 1
 	if ParentID(source.ID) == destination.ID {
@@ -129,36 +219,48 @@ func (c *Client) Copy(ctx context.Context, source, destination Entry, observe fu
 	if err := c.post(ctx, path, body, &response); err != nil {
 		return Entry{}, fmt.Errorf("server copy: %w", err)
 	}
-	if !source.Dir {
-		if response.DocID == "" {
-			return Entry{}, errors.New("server copy response omitted the new file ID")
-		}
-		return Entry{ID: response.DocID, Name: source.Name, Size: source.Size, Rev: response.Rev}, nil
+	if response.DocID == "" || ParentID(response.DocID) != destination.ID {
+		return Entry{}, errors.New("server copy response omitted a valid destination ID")
 	}
-	if response.DocID != "" {
-		return Entry{ID: response.DocID, Name: source.Name, Dir: true, Size: -1}, nil
-	}
-	if response.ID == "" {
-		return Entry{}, errors.New("server directory copy response omitted a job ID")
-	}
-	for {
+	// A directory response contains both the new docid and the async job id.
+	// The docid already exists while members are still being copied.
+	for source.Dir && response.ID != "" {
 		var progress struct {
-			Success  bool   `json:"success"`
-			Status   string `json:"status"`
-			Progress int    `json:"progress"`
-			Error    any    `json:"error"`
+			Success    bool   `json:"success"`
+			Status     string `json:"status"`
+			Size       int64  `json:"size"`
+			SizeCopied int64  `json:"sizecopied"`
+			FileCount  int64  `json:"filecount"`
+			FileCopied int64  `json:"filecopied"`
+			DirCount   int64  `json:"dircount"`
+			DirCopied  int64  `json:"dircopied"`
+			Error      any    `json:"error"`
 		}
 		if err := c.post(ctx, "/efast/v1/dir/copyprogress", map[string]string{"id": response.ID}, &progress); err != nil {
 			return Entry{}, fmt.Errorf("poll server copy: %w", err)
 		}
 		if observe != nil {
-			observe(CopyProgress{Percent: max(0, min(progress.Progress, 100)), Status: progress.Status})
+			total, done := progress.Size, progress.SizeCopied
+			if total <= 0 {
+				total, done = progress.FileCount+progress.DirCount, progress.FileCopied+progress.DirCopied
+			}
+			percent := 0
+			if total > 0 {
+				percent = int(100 * float64(done) / float64(total))
+			}
+			if progress.Status == "finished" {
+				percent = 100
+			}
+			observe(CopyProgress{Percent: max(0, min(percent, 100)), Status: progress.Status})
 		}
-		if progress.Success && strings.EqualFold(progress.Status, "finished") {
-			return Entry{ID: response.ID, Name: source.Name, Dir: true, Size: -1}, nil
-		}
-		if strings.EqualFold(progress.Status, "failed") || progress.Error != nil {
+		if !progress.Success || progress.Status == "failed" || progress.Error != nil {
 			return Entry{}, errors.New("server directory copy failed")
+		}
+		if progress.Status == "finished" {
+			break
+		}
+		if progress.Status != "waiting" && progress.Status != "scanning" && progress.Status != "copying" {
+			return Entry{}, errors.New("server returned an unknown directory copy state")
 		}
 		timer := time.NewTimer(time.Second)
 		select {
@@ -168,4 +270,10 @@ func (c *Client) Copy(ctx context.Context, source, destination Entry, observe fu
 		case <-timer.C:
 		}
 	}
+	entry := Entry{ID: response.DocID, Name: source.Name, Dir: source.Dir, Size: source.Size, Rev: response.Rev}
+	// Same-folder copies are renamed by the server; use their real name.
+	if ondup == 2 {
+		return c.Stat(ctx, entry)
+	}
+	return entry, nil
 }

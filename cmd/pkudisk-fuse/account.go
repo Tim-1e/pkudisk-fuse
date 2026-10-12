@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
@@ -145,14 +144,13 @@ func lsAccounts(output io.Writer, jsonOutput bool) error {
 		fmt.Fprintln(output, "No saved accounts. Run 'pkudisk-fuse account add' to log in and save the first account.")
 		return nil
 	}
-	w := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "DEFAULT\tNAME\tUSERNAME\tSERVER")
+	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		marker := ""
 		if row.Default {
 			marker = "*"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", marker, row.Name, row.Username, row.Server)
+		tableRows = append(tableRows, []string{marker, row.Name, row.Username, row.Server})
 	}
-	return w.Flush()
+	return printTable(output, []string{"DEFAULT", "NAME", "USERNAME", "SERVER"}, tableRows)
 }

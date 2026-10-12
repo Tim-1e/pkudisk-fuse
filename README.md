@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.4` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.5` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -43,7 +43,8 @@ For maintainers, [releasing](docs/releasing.md) describes the tagged CI workflow
 
 ## Built-in help
 
-The CLI uses Cobra. Every command includes its purpose, argument meanings, defaults, behavior, and examples in its help. Flags can appear before or after arguments. Use `--` before a file name beginning with a dash.
+The CLI uses Cobra; text listings use Lip Gloss tables to align Chinese names,
+emoji and numeric columns by terminal display width. Every command includes its purpose, argument meanings, defaults, behavior, and examples in its help. Flags can appear before or after arguments. Use `--` before a file name beginning with a dash.
 
 ```sh
 bin/pkudisk-fuse --help
@@ -161,16 +162,19 @@ The selected root is checked against the libraries returned for the authenticate
 
 ## Server utilities and mounted free space
 
-`util quota` reads the account allocation and reports `allocated - used` as
-writable remaining capacity. `util search` performs a bounded server-side
+`util quota` sums the accessible document libraries. Writable libraries contribute
+their allocation and usage; read-only libraries contribute their used bytes to
+both totals. Available is the sum of writable libraries' remaining capacity. `util search` performs a bounded server-side
 filename search, and `util copy` duplicates a file or folder within NetDisk
 without downloading its bytes through this program. These operations use the
 selected account and never accept arbitrary URL or BitTorrent sources.
 
-FUSE `statfs`/Windows drive free-space queries use the same server quota. The
-local read/write cache volume is not reported as remote capacity. Quota results
-are cached briefly and invalidated after a mount mutation; a transient refresh
-failure uses the last server value during that mount.
+FUSE `statfs`/Windows drive free-space queries use the same library totals.
+`--root` counts only its containing library and checks write permission at the
+selected folder. `--read-only` reports zero available capacity and counts each
+library as used/used. The local cache volume is not remote capacity. Quota queries
+are shared and cached for five seconds, then invalidated after mount mutations.
+A quota or permission failure returns an error instead of stale writable space.
 
 ## Long-lived mounts
 
@@ -186,6 +190,21 @@ The optional live test uses a separate session and reads remote data only:
 PKUDISK_TEST_CREDENTIALS="$HOME/.config/pkudisk-fuse/credentials.json" \
   go test -run '^TestLiveSessionRefresh$' -v ./internal/auth
 ```
+
+For live CLI transfer and utility acceptance with a saved account:
+
+```sh
+PKUDISK_TEST_LIVE=1 go test -count=1 -timeout=7m \
+  -run '^TestLiveUtilityTransfers$' -v ./cmd/pkudisk-fuse
+```
+
+`PKUDISK_TEST_ACCOUNT` selects a saved account. `PKUDISK_TEST_BINARY` optionally
+selects the executable to test; otherwise the test invokes the CLI entry point.
+It creates and removes a small temporary remote tree, compares transfer/copy
+hashes, and requires already indexed file and folder search matches. Indexing
+new uploads is asynchronous, so existing metadata supplies the matched-search
+checks. The regular CI suite exercises these response shapes without credentials
+and tests single-Enter prompt submission in a private Windows console.
 
 ## File behavior
 

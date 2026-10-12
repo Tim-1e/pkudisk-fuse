@@ -37,7 +37,7 @@ type Backend interface {
 }
 
 type quotaBackend interface {
-	Quota(context.Context) (anyshare.Quota, error)
+	StorageQuota(context.Context, string, bool) (anyshare.Quota, error)
 }
 
 type Options struct {
@@ -67,6 +67,12 @@ type statFlight struct {
 	err  error
 }
 
+type quotaFlight struct {
+	done  chan struct{}
+	quota anyshare.Quota
+	err   error
+}
+
 type FileSystem struct {
 	backend     Backend
 	opts        Options
@@ -88,7 +94,7 @@ type FileSystem struct {
 	quotaMu     sync.Mutex
 	quota       anyshare.Quota
 	quotaAt     time.Time
-	quotaValid  bool
+	quotaFlight *quotaFlight
 	closed      bool // Protected by budgetMu, alongside flight registration.
 	nodes       sync.Map
 	root        *Node
@@ -248,6 +254,7 @@ func (f *FileSystem) invalidate() {
 	f.listMu.Unlock()
 	f.quotaMu.Lock()
 	f.quotaAt = time.Time{}
+	f.quotaFlight = nil
 	f.quotaMu.Unlock()
 }
 
@@ -259,27 +266,41 @@ func (f *FileSystem) quotaSnapshot(ctx context.Context) (anyshare.Quota, error) 
 		return anyshare.Quota{}, errors.New("backend does not expose server quota")
 	}
 	f.quotaMu.Lock()
-	if f.quotaValid && time.Since(f.quotaAt) < quotaCacheTTL {
+	if !f.quotaAt.IsZero() && time.Since(f.quotaAt) < quotaCacheTTL {
 		quota := f.quota
 		f.quotaMu.Unlock()
 		return quota, nil
 	}
-	previous, hadPrevious := f.quota, f.quotaValid
+	if flight := f.quotaFlight; flight != nil {
+		f.quotaMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return anyshare.Quota{}, ctx.Err()
+		case <-flight.done:
+			return flight.quota, flight.err
+		}
+	}
+	flight := &quotaFlight{done: make(chan struct{})}
+	f.quotaFlight = flight
 	f.quotaMu.Unlock()
-	quota, err := provider.Quota(ctx)
+	root := ""
+	if f.opts.Root != nil {
+		root = f.opts.Root.ID
+	}
+	ctx, cancel := context.WithTimeout(ctx, f.opts.IOTimeout)
+	defer cancel()
+	quota, err := provider.StorageQuota(ctx, root, f.opts.ReadOnly)
 	f.quotaMu.Lock()
 	defer f.quotaMu.Unlock()
-	if err != nil {
-		// A stale server value is safer than reporting local cache space or
-		// claiming that the remote library has no capacity at all.
-		if hadPrevious {
-			f.opts.Trace.Printf(ctx, "quota refresh failed; using cached server quota: %v", err)
-			return previous, nil
+	if f.quotaFlight == flight {
+		f.quotaFlight = nil
+		if err == nil {
+			f.quota, f.quotaAt = quota, time.Now()
 		}
-		return anyshare.Quota{}, err
 	}
-	f.quota, f.quotaAt, f.quotaValid = quota, time.Now(), true
-	return quota, nil
+	flight.quota, flight.err = quota, err
+	close(flight.done)
+	return quota, err
 }
 
 func quotaBlocks(bytes, block int64) uint64 {

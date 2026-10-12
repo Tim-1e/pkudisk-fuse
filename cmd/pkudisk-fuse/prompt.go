@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -50,8 +51,10 @@ func ttyInput(ctx context.Context, label string, hidden bool) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("interactive terminal unavailable; provide --username and --password-file")
 	}
-	defer input.Close()
-	if output != input {
+	if input != os.Stdin {
+		defer input.Close()
+	}
+	if output != input && output != os.Stdout && output != os.Stderr {
 		defer output.Close()
 	}
 	prompt := newCredentialPrompt(label, hidden)

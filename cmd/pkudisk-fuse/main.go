@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -369,8 +368,7 @@ func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error
 		e.SetIndent("", "  ")
 		return e.Encode(entries)
 	}
-	w := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tBYTES\tID")
+	rows := make([][]string, 0, len(entries))
 	for _, e := range entries {
 		typ := e.Type
 		if typ == "" {
@@ -380,9 +378,9 @@ func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error
 				typ = "file"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", e.Name, typ, e.Size, e.ID)
+		rows = append(rows, []string{e.Name, typ, fmt.Sprint(e.Size), e.ID})
 	}
-	return w.Flush()
+	return printTable(output, []string{"NAME", "TYPE", "BYTES", "ID"}, rows, 2)
 }
 func newRecoverCommand() *cobra.Command {
 	var cache string

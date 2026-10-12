@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"text/tabwriter"
+	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -44,6 +44,7 @@ func (o *utilAuth) add(cmd *cobra.Command) {
 	o.timeout = 10 * time.Minute
 	o.credentials.add(cmd.Flags())
 	cmd.Flags().DurationVar(&o.timeout, "io-timeout", o.timeout, "timeout for the server operation; accepts 30s, 10m, 1h")
+	cmd.Long += "\n\n" + authHelp
 }
 
 type utilCloser interface{ Close() }
@@ -73,11 +74,13 @@ func newUtilQuotaCommand() *cobra.Command {
 	var auth utilAuth
 	cmd := &cobra.Command{
 		Use:   "quota",
-		Short: "Show server allocation and writable remaining capacity",
-		Long: `Read the authenticated account's server quota. Available is
-allocated minus used, clamped at zero; it excludes local cache free space.
-This is the same value exposed as free space by a FUSE mount. The endpoint is
-read-only and does not enumerate files.`,
+		Short: "Show library allocation, usage and writable remaining capacity",
+		Long: `Sum the accessible libraries' quota and used space. Writable libraries
+contribute their allocation and usage; read-only libraries contribute used/used.
+Available is the sum of writable libraries' remaining capacity. Personal and
+shared custom libraries have independent quotas. The local cache is excluded.
+This is the same total exposed by a default writable mount. Quota and permission
+queries are read-only and do not enumerate file contents.`,
 		Example: "  pkudisk-fuse util quota\n  pkudisk-fuse util quota --account work",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -119,6 +122,9 @@ first and restricts the server query to that folder's descendants. Results are
 one bounded page; --limit accepts 1 through 1000. Content and paragraph search
 are not requested. A search never changes remote files.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if limit < 1 || limit > 1000 || strings.TrimSpace(args[0]) == "" || len(args[0]) > 1024 {
+				return usageFailure(cmd, "search needs a nonempty keyword up to 1024 bytes and --limit between 1 and 1000")
+			}
 			client, closer, err := auth.open(cmd)
 			if err != nil {
 				return err
@@ -148,12 +154,15 @@ are not requested. A search never changes remote files.`,
 					Files []anyshare.SearchEntry `json:"files"`
 				}{result.Hits, result.Next, result.Files})
 			}
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSIZE\tPATH\tID")
+			rows := make([][]string, 0, len(result.Files))
 			for _, file := range result.Files {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", file.Name, humanize.IBytes(uint64(file.Size)), file.Path, file.ID)
+				size := "-"
+				if file.Size >= 0 {
+					size = humanize.IBytes(uint64(file.Size))
+				}
+				rows = append(rows, []string{file.Name, size, file.Path, file.ID})
 			}
-			if err := w.Flush(); err != nil {
+			if err := printTable(cmd.OutOrStdout(), []string{"NAME", "SIZE", "PATH", "ID"}, rows, 1); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Matches: %d; returned: %d; next: %d\n", result.Hits, len(result.Files), result.Next)

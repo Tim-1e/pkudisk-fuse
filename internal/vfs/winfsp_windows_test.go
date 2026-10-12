@@ -35,6 +35,23 @@ func testWinFsp(t *testing.T, budget int64) (*WinFsp, *memoryBackend) {
 	return NewWinFsp(context.Background(), core), backend
 }
 
+func TestWinFspMountedServerCapacity(t *testing.T) {
+	adapter, backend := testWinFsp(t, 1<<20)
+	backend.quota = anyshare.Quota{Allocated: 200 << 20, Used: 73 << 20}
+	root := mountWinFspTest(t, adapter)
+	wide, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var available, total, free uint64
+	if err := windows.GetDiskFreeSpaceEx(wide, &available, &total, &free); err != nil {
+		t.Fatal(err)
+	}
+	if total != 200<<20 || available != 127<<20 || free != available {
+		t.Fatalf("mounted total=%d available=%d free=%d", total, available, free)
+	}
+}
+
 func TestWinFspRandomWritesTruncateAndAppend(t *testing.T) {
 	adapter, backend := testWinFsp(t, 0)
 	code, handle := adapter.Create("/report.txt", fuse.O_RDWR, 0600)

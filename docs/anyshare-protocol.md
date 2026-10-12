@@ -46,20 +46,30 @@ These measures only remove client/request-size limits. Account quota, administra
 
 ## Server utilities and quota
 
-The account quota endpoint is read-only:
+Per-library capacity uses the authenticated endpoint:
 
 ```text
-GET /api/efast/v1/quota/user
+GET /api/efast/v1/quota/doc-lib/{url-escaped-full-gns-library-id}
+POST /api/eacp/v1/perm1/checkall
+{"docid":"gns://LIBRARY-OR-SELECTED-FOLDER"}
 ```
 
-It returns `allocated` and `used` byte counts. The client reports
-`max(allocated-used, 0)` as writable remaining capacity. FUSE `statfs` and
-Windows WinFsp `Statfs` use this value for `Bfree`/`Bavail`; they do not report
-free bytes on the private local cache volume. A short cache avoids repeated
-quota requests, and namespace mutations invalidate it. If a refresh fails after
-one successful value, the mount keeps the last server value until the next
-refresh; a first refresh failure returns an I/O error instead of inventing a
-local capacity.
+Each library returns `allocated` and `used`. Permissions come from the named
+`allow` list: `create` or `modify` makes the selected location writable.
+`allowvalue` uses a different representation and is not used for this check.
+Writable libraries contribute `max(allocated,used)` and `used`; read-only
+libraries contribute `used` to both totals. Available is the sum of
+`max(allocated-used,0)` over writable libraries. This includes shared custom
+libraries independently of the personal account quota.
+
+FUSE and WinFsp report these totals. A selected `--root` counts its containing
+library, checking permissions at the selected folder; `--read-only` clamps every
+library to used/used. No capacity is inferred from the cache volume. Concurrent
+queries share a request and successful results are cached for five seconds.
+Mutations invalidate the cache and detach older requests so they cannot repopulate
+it. Failed quota/permission queries are reported instead of retaining stale free
+space. Fixtures cover writable custom/user libraries alongside a read-only
+public library; live acceptance verified public and personal library responses.
 
 The optional `util` command group currently exposes three small server-side
 operations:
@@ -71,7 +81,14 @@ POST /api/ecosearch/v1/file-search
 ```
 
 `util search` resolves an optional folder scope first, then requests one bounded
-filename page. It validates returned IDs, names and sizes before printing them.
+filename page. It validates returned IDs, names and sizes before printing them. The deployed
+search index returns `created_at`/`modified_at` as integer Unix microseconds;
+RFC3339 strings are also accepted, and null/missing times remain absent. Folder
+results use `size:-1` and an empty extension. The filename is basename+extension,
+and `parent_path` is a gns:// parent ID. `dimension:["basename"]` searches files
+and folders; adding `"folder"` or `"file"` restricts the type rather than widening
+the query. Empty output uses a JSON array. Newly uploaded files may remain absent
+until the asynchronous index catches up.
 
 ```text
 POST /api/efast/v1/file/copy
@@ -86,6 +103,13 @@ client polls:
 POST /api/efast/v1/dir/copyprogress
 {"id":"JOB-ID"}
 ```
+
+A directory initiation returns both the new `docid` and a distinct job `id`.
+The destination exists before its contents finish copying, so the client polls
+even when `docid` is present. Progress uses `sizecopied/size` (or copied entry
+counts for empty trees), and success requires `status:"finished"` with `success`.
+The final entry uses the destination docid, not the job ID. Same-folder copies
+use `ondup:2` and obtain their server-generated name from metadata.
 
 `util copy` waits for the server to finish and never moves file bytes through
 the local machine. Existing-name behavior remains the server's policy. Server

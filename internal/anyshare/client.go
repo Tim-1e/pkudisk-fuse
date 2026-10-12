@@ -227,18 +227,26 @@ func (c *Client) Delete(ctx context.Context, e Entry) error {
 }
 
 func (c *Client) Can(ctx context.Context, id, permission string) (bool, error) {
-	var result struct {
-		Allow []string `json:"allow"`
-	}
-	if err := c.post(ctx, "/eacp/v1/perm1/checkall", map[string]string{"docid": id}, &result); err != nil {
+	allow, err := c.permissions(ctx, id)
+	if err != nil {
 		return false, err
 	}
-	for _, p := range result.Allow {
+	for _, p := range allow {
 		if p == permission {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func (c *Client) permissions(ctx context.Context, id string) ([]string, error) {
+	var result struct {
+		Allow []string `json:"allow"`
+	}
+	if err := c.post(ctx, "/eacp/v1/perm1/checkall", map[string]string{"docid": id}, &result); err != nil {
+		return nil, err
+	}
+	return result.Allow, nil
 }
 
 func (c *Client) Rename(ctx context.Context, e Entry, name string, replace bool) (Entry, error) {
