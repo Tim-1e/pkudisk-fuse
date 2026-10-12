@@ -156,7 +156,14 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Use = "ls [REMOTE-DIRECTORY]"
 		cmd.Args = cobra.MaximumNArgs(1)
 		cmd.Short = "List a remote directory or the accessible libraries"
-		cmd.Long = "List files and folders in a remote directory. Omit the path, or use /,\nto list accessible document libraries. Each row includes its name, type,\nsize in bytes, and gns:// ID. Use --json for an array of entries.\nA file path is rejected; use download to retrieve its contents.\n\n" + remoteHelp
+		cmd.Long = `List files and folders in a remote directory. Omit the path, or use /,
+to list accessible document libraries. Library rows show name, type,
+human-readable used/quota and percentage, RW/RO access, and gns:// ID.
+Inside a library, files show sizes in bytes; subfolders show - for size.
+Use --json for an array of entries with the original remote metadata.
+A file path is rejected; use download to retrieve its contents.
+
+` + remoteHelp
 		cmd.Example = "  pkudisk-fuse ls\n  pkudisk-fuse ls --account work --json\n  pkudisk-fuse ls '/My library/Reports'\n  pkudisk-fuse ls --json 'gns://LIBRARY-ID/FOLDER-ID'"
 	case "upload":
 		cmd.Use = "upload LOCAL-PATH REMOTE-DESTINATION"
@@ -318,6 +325,9 @@ continue because the official protocol exposes no job cancellation endpoint.
 			if err != nil {
 				return err
 			}
+			if !jsonOutput && (selector == "/" || selector == "") {
+				return printLibraries(cmd.Context(), client, entries, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return printEntries(cmd.OutOrStdout(), entries, jsonOutput)
 		case "upload", "download", "extract":
 			destination := ""
@@ -378,7 +388,11 @@ func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error
 				typ = "file"
 			}
 		}
-		rows = append(rows, []string{e.Name, typ, fmt.Sprint(e.Size), e.ID})
+		size := "-"
+		if !e.Dir && e.Size >= 0 {
+			size = fmt.Sprint(e.Size)
+		}
+		rows = append(rows, []string{e.Name, typ, size, e.ID})
 	}
 	return printTable(output, []string{"NAME", "TYPE", "BYTES", "ID"}, rows, 2)
 }

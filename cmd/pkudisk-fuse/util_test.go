@@ -100,6 +100,19 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 		}
 		return out
 	}
+	t.Run("library-listing", func(t *testing.T) {
+		text := run("ls")
+		if !strings.Contains(text, "USED / QUOTA") || !strings.Contains(text, "36.5%") || !strings.Contains(text, "RW") {
+			t.Fatal(text)
+		}
+		var entries []struct {
+			ID   string `json:"id"`
+			Size int64  `json:"size"`
+		}
+		if err := json.Unmarshal([]byte(run("ls", "--json")), &entries); err != nil || len(entries) != 1 || entries[0].Size != -1 {
+			t.Fatal("ls JSON schema changed", err)
+		}
+	})
 	t.Run("quota", func(t *testing.T) {
 		if out := run("util", "quota"); !strings.Contains(out, "127 bytes") {
 			t.Fatal(out)

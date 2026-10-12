@@ -59,14 +59,9 @@ func (c *Client) StorageQuota(ctx context.Context, root string, readOnly bool) (
 			if root != "" {
 				selector = root
 			}
-			allow, err := c.permissions(ctx, selector)
+			writable, err = c.Writable(ctx, selector)
 			if err != nil {
 				return Quota{}, fmt.Errorf("check library write permission: %w", err)
-			}
-			for _, permission := range allow {
-				if permission == "create" || permission == "modify" {
-					writable = true
-				}
 			}
 		}
 		if !writable {

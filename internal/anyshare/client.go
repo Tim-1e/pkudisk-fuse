@@ -239,6 +239,19 @@ func (c *Client) Can(ctx context.Context, id, permission string) (bool, error) {
 	return false, nil
 }
 
+func (c *Client) Writable(ctx context.Context, id string) (bool, error) {
+	allow, err := c.permissions(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	for _, permission := range allow {
+		if permission == "create" || permission == "modify" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (c *Client) permissions(ctx context.Context, id string) ([]string, error) {
 	var result struct {
 		Allow []string `json:"allow"`

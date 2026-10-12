@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.5` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.6` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -112,6 +112,12 @@ bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-
 bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-fuse/password '/My library/Reports'
 bin/pkudisk-fuse ls '/My library/Reports'
 ```
+
+Library listings show human-readable used/quota with a usage percentage and
+`RW`/`RO` access. Usage or permission failures are marked unavailable/unknown,
+with details on stderr, so other libraries remain visible. Inside a library,
+regular files keep their byte sizes and folders display `-`. `ls --json` keeps
+the original entry schema, including the remote directory size sentinel `-1`.
 
 `tui` opens a Bubble Tea terminal browser showing the selected account and remote path. The remote list scrolls, paginates, and supports fuzzy filtering with `/`. Use `j`/`k` or the arrows to move, Enter to open a folder, Backspace to go up, `u` to pick a local file or directory to upload, `d` to download the selected file or folder, `a` to save a folder as a server ZIP, `v` to download a folder through one ZIP and extract locally, `x` to extract an existing remote archive, `r` to refresh, and `?` for keyboard help. In the upload picker, Enter opens a directory, Space selects a file or directory, and `p` lets you type a local path. `~` is expanded in local path inputs.
 
