@@ -24,7 +24,8 @@ jobs:
           - os: macos-latest
             flags: -race
           - os: windows-latest
-            flags: ''
+            # Native service tests change machine-wide WinFsp/SCM state.
+            flags: '-p 1'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
