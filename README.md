@@ -267,6 +267,10 @@ Temporary network failures retry after a minute. When the server rejects the ref
 
 A user service with `Restart=on-failure` can keep a mount alive across the current user session; it does not put credentials in this repository. The service used for the local read-only mount is outside the repository under `~/.config/systemd/user/`.
 
+On Windows, `scripts/windows-mount.ps1` installs a current-user login task with a
+silent launcher, diagnostics and failure retries. Log in with `account add` first,
+then follow [Windows background startup](docs/platform-support.md#windows-background-startup).
+
 The optional live test uses a separate session and reads remote data only:
 
 ```sh

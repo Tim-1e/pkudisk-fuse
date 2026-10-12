@@ -35,6 +35,7 @@ archives:
       - README.md
       - docs/platform-support.md
       - docs/transfer-limits.md
+      - scripts/windows-mount.ps1
       - completions/*
       - licenses/Go-LICENSE
       - licenses/**/*

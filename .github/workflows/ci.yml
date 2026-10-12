@@ -61,6 +61,10 @@ jobs:
           'PKUDISK_FUSE_REQUIRE_KERNEL=1' >> $env:GITHUB_ENV
       - name: Test
         run: go test -count=1 ${{ matrix.flags }} ./...
+      - name: Test Windows background startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-mount-test.ps1
       - name: Cross-build supported platforms
         if: runner.os == 'Linux'
         run: |

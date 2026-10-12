@@ -44,6 +44,43 @@ Mounted reads consume incoming range data progressively: a header read can finis
 
 Remote paths always use forward slashes, including on Windows. Local paths use the host's syntax. `~`, `~/...` and `~\...` expand to the current user's home directory. Windows reserved names, alternate-data-stream syntax, backslashes within a remote filename and names ending in a dot or space cannot be used as local filenames. The mount omits such names; CLI `ls` can show them, and `download REMOTE EXPLICIT-LOCAL-FILE` can save their contents under a valid name.
 
+## Windows background startup
+
+Release archives include `scripts/windows-mount.ps1`. After installing WinFsp and
+saving a login with `pkudisk-fuse.exe account add`, run from the extracted archive:
+
+```powershell
+.\scripts\windows-mount.ps1 -Action Install -MountPoint P:
+.\scripts\windows-mount.ps1 -Action Start -MountPoint P:
+.\scripts\windows-mount.ps1 -Action Status -MountPoint P:
+```
+
+From a source checkout, pass `-Executable` with the built executable's path to
+`Install`. Keep that executable in place; the task records its absolute path.
+The installer uses Windows' bundled .NET Framework compiler to create a small GUI
+launcher below `%LOCALAPPDATA%\pkudisk-fuse\background\P`. The directory allows
+only the current user and SYSTEM. No Go, Python, VBScript or additional service
+manager is needed. Normal PowerShell script execution policy still applies.
+
+The task runs with the current user's unelevated interactive token, so the drive
+is visible in that user's Explorer session. It starts 30 seconds after login and
+the launcher retries a failed mount after one minute. It has no execution time
+limit and continues on battery. A Windows service running before login would use
+a different session and does not provide this desktop drive mapping.
+
+The GUI launcher starts the CLI with `CreateNoWindow` and `--non-interactive`,
+reusing its saved default account. Both output streams and exit codes are appended
+to `mount.log` in the background directory. `Running` also includes retry waits;
+check the log's `Mounted PKU NetDisk` message and the drive to confirm the mount.
+If authentication requires a CAPTCHA or OTP, log in again interactively with
+`account add NAME --replace` using the default account name from `account ls`,
+then run `-Action Start`.
+
+Close applications using the drive before `-Action Stop` or `-Action Remove`.
+Stopping a task terminates its process tree; pending writes may need `recover`.
+`Remove` also removes login startup but retains logs and saved accounts. Stop an
+existing foreground mount with Ctrl-C before starting the task on the same letter.
+
 ## Account storage and permissions
 
 | Platform | Default account file | Default mount-cache parent |
