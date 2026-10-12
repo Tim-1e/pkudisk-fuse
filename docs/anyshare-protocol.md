@@ -78,6 +78,11 @@ libraries are deduplicated by normalized server and original library ID for
 capacity reporting, using writable access from any participating account.
 Cross-account rename is rejected before flushing or temporarily renaming a
 source. Recovery journals record the account/server and original remote IDs.
+`tui --all-accounts` reuses this scoped listing namespace. Transfers and sharing
+resolve the owning account locally and use that client's original IDs; returned
+entry metadata is scoped again to preserve UI selection across shared libraries.
+Virtual account nodes cannot start file operations. Extraction strips the
+selected account's path prefix and rejects another account's destination.
 
 The top-level `quota`, `search`, `copy`, `share` and `link` commands use these
 server APIs:

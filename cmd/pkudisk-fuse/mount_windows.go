@@ -81,7 +81,7 @@ func windowsMountpoint(value string) (string, error) {
 	return point, nil
 }
 
-func mountFileSystem(ctx context.Context, source *mountSource, opts mountOptions, output io.Writer) (result error) {
+func mountFileSystem(ctx context.Context, source *accountSource, opts mountOptions, output io.Writer) (result error) {
 	point, err := windowsMountpoint(localfile.ExpandPath(opts.mountpoint))
 	if err != nil {
 		return err

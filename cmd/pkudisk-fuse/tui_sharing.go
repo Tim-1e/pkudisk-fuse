@@ -62,6 +62,8 @@ type tuiSharing struct {
 	options   anyshare.ShareOptions
 	link      anyshare.ShareLink
 	confirm   string
+	backend   sharingBackend
+	target    tuiTarget
 }
 
 type sharingMsg struct {
@@ -79,11 +81,19 @@ func (m *tuiModel) openSharing() tea.Cmd {
 	if entry == nil {
 		return nil
 	}
-	if _, ok := m.backend.(sharingBackend); !ok {
+	target, err := m.target(entry.ID)
+	if err != nil {
+		m.setError("Select sharing account", err)
+		return nil
+	}
+	backend, ok := target.backend.(sharingBackend)
+	if !ok {
 		m.status = "Sharing is unavailable for this backend"
 		return nil
 	}
-	m.sharing = &tuiSharing{entry: *entry, choices: list.New(nil, list.NewDefaultDelegate(), 76, 14)}
+	selected := *entry
+	selected.ID = target.id
+	m.sharing = &tuiSharing{entry: selected, backend: backend, target: target, choices: list.New(nil, list.NewDefaultDelegate(), 76, 14)}
 	m.sharing.choices.DisableQuitKeybindings()
 	m.mode = sharingMode
 	return m.sharingMenu()
@@ -127,8 +137,8 @@ func (m *tuiModel) sharingOperation(action, query string) tea.Cmd {
 	m.cancel, m.busy, m.meter = cancel, true, nil
 	m.activity = "Sharing: " + action
 	m.status, m.statusError = "", false
-	backend := m.backend.(sharingBackend)
 	s := *m.sharing
+	backend := s.backend
 	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		defer cancel()
 		msg := sharingMsg{id: id, action: action}
@@ -156,6 +166,7 @@ func (m *tuiModel) sharingOperation(action, query string) tea.Cmd {
 		case "revoke-link":
 			msg.err = backend.RemoveExternalLink(ctx, s.link.ID)
 		}
+		msg.err = s.target.error(msg.err)
 		return msg
 	})
 }

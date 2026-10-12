@@ -109,6 +109,17 @@ func (b *AccountBackend) lookup(id string) (MountAccount, string, error) {
 	return account, remote, nil
 }
 
+// Account resolves the owning session and original server ID for a scoped
+// entry. Browsers can use that backend's transfer/share APIs directly.
+func (b *AccountBackend) Account(id string) (MountAccount, string, error) {
+	return b.lookup(id)
+}
+
+// Scope restores an account identity on metadata returned by a direct API.
+func (b *AccountBackend) Scope(id string, entry anyshare.Entry) anyshare.Entry {
+	return scopedEntry(id, entry)
+}
+
 func (b *AccountBackend) remote(id string) (MountAccount, string, error) {
 	account, remote, err := b.lookup(id)
 	if err == nil && remote == "" {
@@ -145,12 +156,15 @@ func (b *AccountBackend) List(ctx context.Context, id string) ([]anyshare.Entry,
 	} else {
 		entries, err = account.Backend.List(ctx, remote)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("account %q: %w", account.Name, err)
+	}
 	// Backends may retain their returned slice; do not modify its IDs in place.
 	result := make([]anyshare.Entry, len(entries))
 	for i, entry := range entries {
 		result[i] = scopedEntry(id, entry)
 	}
-	return result, err
+	return result, nil
 }
 
 func (b *AccountBackend) Stat(ctx context.Context, entry anyshare.Entry) (anyshare.Entry, error) {

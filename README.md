@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.4.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.4.1` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -74,8 +74,9 @@ Commands are top-level and help groups them by purpose. In v0.4.0, `quota`,
 old forms are removed. `share` manages internal access, and `link` manages
 external links. Commands and listing verbs have no aliases.
 
-`--account/-a` selects one saved account by its exact name. Mount multiple
-accounts with `mount --all-accounts`; the wildcard `*` has no special meaning.
+`--account/-a` selects one saved account by its exact name. Use
+`mount --all-accounts` or `tui --all-accounts` to aggregate saved accounts;
+the wildcard `*` has no special meaning.
 
 ```sh
 bin/pkudisk-fuse ls -a work
@@ -148,7 +149,23 @@ the original entry schema, including the remote directory size sentinel `-1`.
 
 ```sh
 bin/pkudisk-fuse tui
+bin/pkudisk-fuse tui --all-accounts
 ```
+
+With `--all-accounts`, the TUI root contains saved account directories. Entering
+one shows its libraries and updates the header to that account/server; `g`
+returns to the account root. Uploads, downloads, ZIP operations, extraction and
+sharing use the owning account's session. Virtual account directories cannot
+be uploaded into, downloaded or shared; open a library first. Extraction paths
+include the account name (`/work/My library/Folder`), and extraction cannot
+target another account. A raw `gns://` destination uses the current account.
+Local download defaults and overwrite prompts remain the same.
+
+All saved accounts must authenticate and list their libraries before the TUI
+opens. The default account and saved account set are unchanged. This mode uses
+the same directory-name checks as the mount and is mutually exclusive with
+`--account`, `--server`, explicit credentials and `--no-save`. Session errors
+identify the account. Default TUI behavior remains a single account.
 
 Directory reads and transfers run asynchronously so the screen remains responsive. The TUI adapts to terminal resizing and shows transfer progress and speed. Esc cancels an active transfer or dialog; `q` quits, cancelling an active operation first. Existing files require an explicit overwrite choice. Bubble Tea manages terminal input and restoration on exit.
 
@@ -325,8 +342,9 @@ independently, and an expired session ends the mount with the account named in
 the error. The account set stays fixed until the next mount; the saved default
 is unchanged.
 
-`--all-accounts` is only available for `mount`, and cannot be combined with
-`--account`, `--root`, `--server`, explicit credentials, or `--no-save`.
+`--all-accounts` is available for `mount` and `tui`, and cannot be combined with
+`--account`, `--server`, explicit credentials, or `--no-save`. Mounts also
+exclude `--root` in this mode.
 Cross-account moves return `EXDEV` before changing any remote file. Use a copy
 followed by deletion when needed. Capacity counts a shared library on the same
 server once; its free space counts if any mounted account can write there.

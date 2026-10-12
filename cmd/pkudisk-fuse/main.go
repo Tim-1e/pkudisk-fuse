@@ -164,6 +164,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 func newRemoteCommand(name string) *cobra.Command {
 	var credentials authFlags
 	var overwrite, jsonOutput, archive, viaArchive bool
+	var allAccounts bool
 	var sizes sizeFormat
 	timeout := 10 * time.Minute
 	var mount mountOptions
@@ -261,6 +262,9 @@ continue because the official protocol exposes no job cancellation endpoint.
 		cmd.Short = "Open an interactive remote file browser"
 		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads files/folders, d downloads files/folders, a saves a folder ZIP,\nv transfers a folder via ZIP, x extracts a remote archive, r refreshes,\ns opens sharing (internal links, recipients, external links and revocation),\n? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
 		cmd.Example = "  pkudisk-fuse tui\n  pkudisk-fuse tui --account work --io-timeout 30m"
+		cmd.Long += "\n\n--all-accounts shows saved accounts as top-level directories, followed by\neach account's libraries. Entering an account changes the displayed account\nand routes uploads, downloads, extraction and sharing to that session.\nAccount directories are virtual; open a library before file operations.\nAll saved accounts must authenticate and list their libraries at startup.\nThe saved default stays unchanged. --all-accounts cannot be combined with\n--account, --server, explicit credentials or --no-save."
+		cmd.Example += "\n  pkudisk-fuse tui --all-accounts"
+		cmd.Flags().BoolVar(&allAccounts, "all-accounts", false, "browse every saved account under its own top-level directory")
 	case "mount":
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
@@ -303,7 +307,7 @@ but omit credentials, request bodies and signed URL paths/queries.
 ` + remoteHelp
 		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --all-accounts" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --verbose 2> mount.log"
 		f := cmd.Flags()
-		f.BoolVar(&mount.allAccounts, "all-accounts", false, "mount every saved account in its own top-level directory; requires all accounts to be usable")
+		f.BoolVar(&allAccounts, "all-accounts", false, "mount every saved account in its own top-level directory; requires all accounts to be usable")
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
 		mount.cacheLimit, mount.partSize, mount.read = 10<<30, 16<<20, vfs.DefaultReadOptions()
@@ -346,14 +350,14 @@ but omit credentials, request bodies and signed URL paths/queries.
 		if name == "mount" && (mount.cacheLimit < 0 || mount.partSize < 5<<20 || mount.ttl < 0 || mount.refreshInterval < 0) {
 			return usageFailure(cmd, "cache limits and intervals must be nonnegative; --part-size must be at least 5242880 bytes")
 		}
-		if name == "mount" {
-			if mount.allAccounts {
-				for _, flag := range []string{"account", "root", "server", "username", "password-file", "credentials-file", "password-stdin", "no-save"} {
-					if cmd.Flags().Changed(flag) {
-						return usageFailure(cmd, "--all-accounts cannot be combined with --"+flag)
-					}
+		if allAccounts {
+			for _, flag := range []string{"account", "root", "server", "username", "password-file", "credentials-file", "password-stdin", "no-save"} {
+				if cmd.Flags().Changed(flag) {
+					return usageFailure(cmd, "--all-accounts cannot be combined with --"+flag)
 				}
 			}
+		}
+		if name == "mount" {
 			if err := mount.read.Validate(); err != nil {
 				return usageFailure(cmd, err.Error())
 			}
@@ -376,12 +380,20 @@ but omit credentials, request bodies and signed URL paths/queries.
 		credentials.announce = name != "tui"
 		if name == "mount" {
 			mount.mountpoint, mount.timeout = args[0], timeout
-			source, err := prepareMount(cmd.Context(), credentials, mount)
+			source, err := prepareAccounts(cmd.Context(), credentials, accountOptions{allAccounts: allAccounts, root: mount.root, partSize: mount.partSize, timeout: timeout, trace: mount.trace})
 			if err != nil {
 				return err
 			}
 			defer source.Close()
 			return mountFileSystem(cmd.Context(), source, mount, cmd.ErrOrStderr())
+		}
+		if name == "tui" && allAccounts {
+			source, err := prepareAccounts(cmd.Context(), credentials, accountOptions{allAccounts: true, timeout: timeout})
+			if err != nil {
+				return err
+			}
+			defer source.Close()
+			return runTUI(cmd.Context(), source.backend, "All accounts", fmt.Sprintf("%d saved accounts", len(source.sessions)), timeout, sizes, cmd.InOrStdin(), cmd.OutOrStdout())
 		}
 		session, server, account, err := authenticate(cmd.Context(), credentials)
 		if err != nil {

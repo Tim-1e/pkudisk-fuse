@@ -18,7 +18,7 @@ import (
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
-func mountFileSystem(ctx context.Context, source *mountSource, opts mountOptions, output io.Writer) error {
+func mountFileSystem(ctx context.Context, source *accountSource, opts mountOptions, output io.Writer) error {
 	cache := localfile.ExpandPath(opts.cache)
 	readOnly, debug := opts.readOnly, opts.debug
 	cacheLimit := opts.cacheLimit

@@ -11,23 +11,32 @@ import (
 	"github.com/thezzisu/pkudisk-fuse/internal/accounts"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 	"github.com/thezzisu/pkudisk-fuse/internal/auth"
+	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
-type mountSession struct {
+type accountSession struct {
 	name    string
 	session *auth.Session
 }
 
-type mountSource struct {
+type accountSource struct {
 	backend  vfs.Backend
 	root     *anyshare.Entry
-	sessions []mountSession
+	sessions []accountSession
 }
 
-// Both drivers share account selection, root validation and session lifetime.
-func prepareMount(ctx context.Context, credentials authFlags, opts mountOptions) (_ *mountSource, result error) {
-	source := new(mountSource)
+type accountOptions struct {
+	allAccounts bool
+	root        string
+	partSize    int64
+	timeout     time.Duration
+	trace       *diagnostic.Logger
+}
+
+// Mounts and browsers share account selection, root validation and session lifetime.
+func prepareAccounts(ctx context.Context, credentials authFlags, opts accountOptions) (_ *accountSource, result error) {
+	source := new(accountSource)
 	defer func() {
 		if result != nil {
 			source.Close()
@@ -59,17 +68,19 @@ func prepareMount(ctx context.Context, credentials authFlags, opts mountOptions)
 			if name == "" {
 				return nil, err
 			}
-			return nil, fmt.Errorf("prepare mount account %q: %w", name, err)
+			return nil, fmt.Errorf("prepare account %q: %w", name, err)
 		}
-		source.sessions = append(source.sessions, mountSession{label, session})
+		source.sessions = append(source.sessions, accountSession{label, session})
 		client, err := anyshare.New(server, session)
 		if err != nil {
 			return nil, err
 		}
-		client.PartSize = opts.partSize
+		if opts.partSize > 0 {
+			client.PartSize = opts.partSize
+		}
 		client.SetTrace(opts.trace)
 		if err := selectMountRoot(ctx, source, client, opts); err != nil {
-			return nil, fmt.Errorf("prepare mount account %q: %w", label, err)
+			return nil, fmt.Errorf("prepare account %q: %w", label, err)
 		}
 		mounted = append(mounted, vfs.MountAccount{Name: label, Server: server, Backend: client})
 		source.backend = client
@@ -84,7 +95,7 @@ func prepareMount(ctx context.Context, credentials authFlags, opts mountOptions)
 	return source, nil
 }
 
-func selectMountRoot(ctx context.Context, source *mountSource, client *anyshare.Client, opts mountOptions) error {
+func selectMountRoot(ctx context.Context, source *accountSource, client *anyshare.Client, opts accountOptions) error {
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
 	if opts.root == "" || opts.root == "/" {
@@ -102,13 +113,13 @@ func selectMountRoot(ctx context.Context, source *mountSource, client *anyshare.
 	return nil
 }
 
-func (s *mountSource) Close() {
+func (s *accountSource) Close() {
 	for _, account := range s.sessions {
 		account.session.Close()
 	}
 }
 
-func (s *mountSource) maintain(ctx context.Context, interval time.Duration, output io.Writer) (<-chan error, func()) {
+func (s *accountSource) maintain(ctx context.Context, interval time.Duration, output io.Writer) (<-chan error, func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	failed := make(chan error, len(s.sessions))
 	var workers sync.WaitGroup

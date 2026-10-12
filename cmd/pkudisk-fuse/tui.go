@@ -28,8 +28,8 @@ import (
 )
 
 type browserBackend interface {
-	transfer.Backend
 	Roots(context.Context) ([]anyshare.Entry, error)
+	List(context.Context, string) ([]anyshare.Entry, error)
 }
 type remoteItem struct {
 	entry anyshare.Entry
@@ -172,7 +172,7 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 			key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "extract remote archive")),
 			key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "share / links / revoke")),
 			key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-			key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "library root")),
+			key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "root")),
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel operation")),
 			key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		}
@@ -196,7 +196,8 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 	spin.Spinner = spinner.Dot
 	bar := progress.New(progress.WithDefaultBlend())
 	bar.SetWidth(45)
-	return &tuiModel{ctx: ctx, backend: backend, service: transfer.Service{Backend: backend}, account: account, server: server, timeout: timeout,
+	transfers, _ := backend.(transfer.Backend)
+	return &tuiModel{ctx: ctx, backend: backend, service: transfer.Service{Backend: transfers}, account: account, server: server, timeout: timeout,
 		width: 80, height: 24, remote: remote, picker: picker, input: input, spinner: spin, progress: bar, location: browserLocation{path: "/"}}
 }
 func (m *tuiModel) Init() tea.Cmd { return m.load(m.location, nil) }
@@ -240,6 +241,28 @@ func (m *tuiModel) currentLocation() browserLocation {
 	return location
 }
 func (m *tuiModel) startTransfer(direction, source, destination string, overwrite bool) tea.Cmd {
+	selector := source
+	if direction == "upload" {
+		selector = destination
+	}
+	target, err := m.target(selector)
+	if err != nil {
+		m.setError("Select transfer account", err)
+		return nil
+	}
+	remoteSource, remoteDestination := source, destination
+	if direction == "upload" {
+		remoteDestination = target.id
+	} else {
+		remoteSource = target.id
+	}
+	if direction == "extract" {
+		remoteDestination, err = target.extractionDestination(destination)
+		if err != nil {
+			m.setError("Select extraction destination", err)
+			return nil
+		}
+	}
 	m.operation++
 	id := m.operation
 	ctx, cancel := context.WithTimeout(m.ctx, m.timeout)
@@ -256,18 +279,21 @@ func (m *tuiModel) startTransfer(direction, source, destination string, overwrit
 	m.meter = meter
 	m.progressState = transfer.Progress{}
 	service := m.service
+	service.Backend = target.backend
 	service.Archive, service.ViaArchive = m.archive, m.viaArchive
 	return tea.Batch(m.spinner.Tick, progressTick(id), func() tea.Msg {
 		defer cancel()
 		var result transfer.Result
 		var err error
 		if direction == "upload" {
-			result, err = service.Upload(ctx, source, destination, overwrite, meter.Update)
+			result, err = service.Upload(ctx, source, remoteDestination, overwrite, meter.Update)
 		} else if direction == "extract" {
-			result, err = service.Extract(ctx, source, destination, meter.Update)
+			result, err = service.Extract(ctx, remoteSource, remoteDestination, meter.Update)
 		} else {
-			result, err = service.Download(ctx, source, destination, overwrite, meter.Update)
+			result, err = service.Download(ctx, remoteSource, destination, overwrite, meter.Update)
 		}
+		result.Entry = target.scope(result.Entry)
+		err = target.error(err)
 		return transferMsg{id, direction, result, err}
 	})
 }
@@ -473,7 +499,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.load(browserLocation{entry: entry, path: strings.TrimRight(m.location.path, "/") + "/" + entry.Name}, history)
 			case "backspace", "h", "left":
 				if len(m.history) == 0 {
-					m.status = "Already at the library root"
+					m.status = "Already at root"
 					return m, nil
 				}
 				last := len(m.history) - 1
@@ -483,7 +509,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			case "r":
 				return m, m.load(m.currentLocation(), m.history)
 			case "u":
-				if m.location.entry == nil {
+				if m.location.entry == nil || m.virtual(m.location.entry.ID) {
 					m.status = "Open a library or folder before uploading"
 					return m, nil
 				}
@@ -494,6 +520,10 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			case "d", "a", "v", "x":
 				entry := m.selected()
 				if entry == nil {
+					return m, nil
+				}
+				if m.virtual(entry.ID) {
+					m.status = "Open an account's library before file operations"
 					return m, nil
 				}
 				if (k == "a" || k == "v") && !entry.Dir {
@@ -590,7 +620,8 @@ func (m *tuiModel) setError(action string, err error) {
 func (m *tuiModel) View() tea.View {
 	accent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	header := ansi.Truncate(accent.Render("PKU NetDisk")+"  Account: "+tuiText(m.account), m.width-4, "…") + "\n" + muted.Render(ansi.Truncate(tuiText(m.server), m.width-4, "…")) + "\n" + ansi.Truncate("Remote: "+tuiText(m.location.path), m.width-4, "…") + "\n"
+	account, server := m.accountContext()
+	header := ansi.Truncate(accent.Render("PKU NetDisk")+"  Account: "+tuiText(account), m.width-4, "…") + "\n" + muted.Render(ansi.Truncate(tuiText(server), m.width-4, "…")) + "\n" + ansi.Truncate("Remote: "+tuiText(m.location.path), m.width-4, "…") + "\n"
 	var content string
 	switch m.mode {
 	case sharingMode:

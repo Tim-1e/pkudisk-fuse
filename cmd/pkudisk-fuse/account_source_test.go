@@ -19,20 +19,28 @@ import (
 
 func TestAllAccountsFlagScopeAndConflicts(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	for _, flag := range []string{"account", "root", "server", "username", "password-file", "credentials-file", "password-stdin", "no-save"} {
-		args := []string{"mount", "unused", "--all-accounts", "--" + flag}
-		if flag != "password-stdin" && flag != "no-save" {
-			args = append(args, "value")
-		}
-		out, stderr, err := testExecute(args...)
-		if exitCode(err) != 2 || !strings.Contains(err.Error(), "--all-accounts cannot be combined") || out != "" || stderr != "" {
-			t.Fatal("invalid selection reached authentication or driver startup", args, out, stderr, err)
+	for _, command := range []string{"mount", "tui"} {
+		for _, flag := range []string{"account", "root", "server", "username", "password-file", "credentials-file", "password-stdin", "no-save"} {
+			if command == "tui" && flag == "root" {
+				continue
+			}
+			args := []string{command, "--all-accounts", "--" + flag}
+			if command == "mount" {
+				args = append(args, "unused")
+			}
+			if flag != "password-stdin" && flag != "no-save" {
+				args = append(args, "value")
+			}
+			out, stderr, err := testExecute(args...)
+			if exitCode(err) != 2 || !strings.Contains(err.Error(), "--all-accounts cannot be combined") || out != "" || stderr != "" {
+				t.Fatal("invalid selection reached authentication or driver startup", args, out, stderr, err)
+			}
 		}
 	}
 	for _, args := range [][]string{
-		{"ls", "--all-accounts"}, {"tui", "--all-accounts"},
+		{"ls", "--all-accounts"}, {"quota", "--all-accounts"},
 		{"upload", "local", "remote", "--all-accounts"}, {"download", "remote", "--all-accounts"},
-		{"account", "ls", "--all-accounts"}, {"quota", "--all-accounts"},
+		{"account", "ls", "--all-accounts"}, {"share", "ls", "path", "--all-accounts"},
 	} {
 		if _, _, err := testExecute(args...); exitCode(err) != 2 {
 			t.Fatal("multi-account flag leaked into another command", args, err)
@@ -42,7 +50,11 @@ func TestAllAccountsFlagScopeAndConflicts(t *testing.T) {
 	if err != nil || stderr != "" || !strings.Contains(out, "--all-accounts") || !strings.Contains(out, "Cross-account moves") {
 		t.Fatal("multi-account help is incomplete or went online", out, stderr, err)
 	}
-	if _, err := prepareMount(context.Background(), authFlags{nonInteractive: true}, mountOptions{allAccounts: true}); err == nil || !strings.Contains(err.Error(), "account add") {
+	out, stderr, err = testExecute("tui", "--all-accounts", "-h")
+	if err != nil || stderr != "" || !strings.Contains(out, "--all-accounts") || !strings.Contains(out, "top-level directories") {
+		t.Fatal("aggregate TUI help is incomplete or went online", out, stderr, err)
+	}
+	if _, err := prepareAccounts(context.Background(), authFlags{nonInteractive: true}, accountOptions{allAccounts: true}); err == nil || !strings.Contains(err.Error(), "account add") {
 		t.Fatal("empty account store did not suggest account add", err)
 	}
 	// A star stays a literal saved-account name; it never changes selection.
@@ -123,8 +135,8 @@ func TestPrepareMountAccountsAndSessionLifecycleThroughHTTP(t *testing.T) {
 	}
 	var output bytes.Buffer
 	flags := authFlags{announce: true, nonInteractive: true, output: &output}
-	opts := mountOptions{allAccounts: true, partSize: 8 << 20, timeout: time.Second}
-	source, err := prepareMount(context.Background(), flags, opts)
+	opts := accountOptions{allAccounts: true, partSize: 8 << 20, timeout: time.Second}
+	source, err := prepareAccounts(context.Background(), flags, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +206,7 @@ func TestPrepareMountAccountsAndSessionLifecycleThroughHTTP(t *testing.T) {
 	}
 	rejectBravo.Store(false)
 	rejectBravoRoots.Store(true)
-	if failed, err := prepareMount(context.Background(), flags, opts); failed != nil || !errors.Is(err, anyshare.ErrPermission) || !strings.Contains(err.Error(), "bravo") {
+	if failed, err := prepareAccounts(context.Background(), flags, opts); failed != nil || !errors.Is(err, anyshare.ErrPermission) || !strings.Contains(err.Error(), "bravo") {
 		t.Fatal("startup silently dropped an unusable account", failed, err)
 	}
 }
@@ -222,7 +234,7 @@ func TestPrepareSingleAccountMountPreservesRootSelection(t *testing.T) {
 	if err := store.Put(accounts.Account{Name: "single", Username: "single", Password: "private-fixture", Server: server.URL, Session: auth.State{RefreshToken: "refresh"}}, true, false); err != nil {
 		t.Fatal(err)
 	}
-	source, err := prepareMount(context.Background(), authFlags{nonInteractive: true}, mountOptions{root: "/Library", partSize: 8 << 20, timeout: time.Second})
+	source, err := prepareAccounts(context.Background(), authFlags{nonInteractive: true}, accountOptions{root: "/Library", partSize: 8 << 20, timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,6 +34,13 @@ Account names must be valid local directory names; Windows rejects reserved
 names and case-insensitive collisions. Cross-account rename is rejected before
 any remote mutation. Shared library capacity is counted once per server.
 
+`tui --all-accounts` uses the same account directories and requires no mount
+driver. Every saved account is restored and its libraries checked before
+opening the browser. Transfers and sharing use the selected object's owning
+client; internal account prefixes are never sent to server APIs. Directory
+and ZIP transfers, overwrite/revision checks and extraction work through the
+existing transfer service. Account directories are virtual and read-only.
+
 Use `mount P: --verbose 2> mount.log` from a local folder to diagnose application freezes. Verbose logs record WinFsp callbacks before handle/node locks, plus metadata decisions, cached and remote reads, HTTP connection/header/body phases and operation durations. A numbered `START` without its matching `END` identifies outstanding work in this process. `--debug` adds driver protocol diagnostics when needed; neither flag can observe a request that never reaches this process. Linux/macOS provide the same verbose cache/HTTP diagnostics and go-fuse callback logging.
 
 WinFsp opens directory handles for attribute/security probes as well as enumeration. These opens do not fetch directory contents; the first `Readdir` loads a snapshot. Known paths avoid ancestor listing walks. Metadata from a recent listing satisfies opens and attributes until the existing `--cache-ttl` expires. Concurrent metadata/listing requests share a fetch, and metadata HTTP calls run outside the file lock. An external rename/deletion invalidates obsolete path/listing state, and older enumeration snapshots cannot replace newer metadata.
