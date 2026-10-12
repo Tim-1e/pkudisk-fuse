@@ -31,7 +31,10 @@ type browserBackend interface {
 	transfer.Backend
 	Roots(context.Context) ([]anyshare.Entry, error)
 }
-type remoteItem struct{ entry anyshare.Entry }
+type remoteItem struct {
+	entry anyshare.Entry
+	sizes sizeFormat
+}
 
 func (i remoteItem) Title() string {
 	if i.entry.Dir {
@@ -43,7 +46,7 @@ func (i remoteItem) Description() string {
 	if i.entry.Dir {
 		return "Folder"
 	}
-	text := transferBytes(i.entry.Size)
+	text := i.sizes.value(i.entry.Size)
 	if !i.entry.Modified.IsZero() {
 		text += "  " + i.entry.Modified.Local().Format("2006-01-02 15:04")
 	}
@@ -92,6 +95,7 @@ type tuiModel struct {
 	backend             browserBackend
 	service             transfer.Service
 	account, server     string
+	sizes               sizeFormat
 	timeout             time.Duration
 	width, height       int
 	remote              list.Model
@@ -122,13 +126,14 @@ func interactiveIO(in io.Reader, out io.Writer) bool {
 	output, outOK := out.(*os.File)
 	return inOK && outOK && term.IsTerminal(int(input.Fd())) && term.IsTerminal(int(output.Fd()))
 }
-func runTUI(ctx context.Context, backend browserBackend, account, server string, timeout time.Duration, in io.Reader, out io.Writer) error {
+func runTUI(ctx context.Context, backend browserBackend, account, server string, timeout time.Duration, sizes sizeFormat, in io.Reader, out io.Writer) error {
 	if !interactiveIO(in, out) {
 		return errors.New("tui requires an interactive terminal")
 	}
 	uiCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	model := newTUIModel(uiCtx, backend, account, server, timeout)
+	model.sizes = sizes
 	_, err := tea.NewProgram(model, tea.WithContext(uiCtx), tea.WithInput(in), tea.WithOutput(out)).Run()
 	if model.cancel != nil {
 		model.cancel()
@@ -305,7 +310,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		items := make([]list.Item, len(msg.entries))
 		selected := 0
 		for i, entry := range msg.entries {
-			items[i] = remoteItem{entry}
+			items[i] = remoteItem{entry: entry, sizes: m.sizes}
 			if entry.ID == msg.location.selected {
 				selected = i
 			}
@@ -340,7 +345,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(m.activity, msg.err)
 			return m, nil
 		}
-		m.status = fmt.Sprintf("%s complete: %s (%s)", m.activity, tuiText(msg.result.Entry.Name), transferBytes(msg.result.Bytes))
+		m.status = fmt.Sprintf("%s complete: %s (%s)", m.activity, tuiText(msg.result.Entry.Name), m.sizes.value(msg.result.Bytes))
 		m.statusError = false
 		if msg.result.Entry.Dir {
 			m.status += fmt.Sprintf(" • %d files, %d directories", msg.result.Files, msg.result.Dirs)
@@ -609,9 +614,9 @@ func (m *tuiModel) View() tea.View {
 			if state.Phase == transfer.Finalizing {
 				phase = "  finishing..."
 			}
-			detail := transferBytes(state.Done) + " / " + transferBytes(state.Total) + phase
+			detail := m.sizes.value(state.Done) + " / " + m.sizes.value(state.Total) + phase
 			if state.Total < 0 {
-				detail = transferBytes(state.Done) + " (total unknown)"
+				detail = m.sizes.value(state.Done) + " (total unknown)"
 			}
 			if state.Phase == transfer.Preparing || state.Phase == transfer.Extracting {
 				detail = fmt.Sprintf("%s (%d%%)", state.Phase, state.Percent)
@@ -619,7 +624,7 @@ func (m *tuiModel) View() tea.View {
 			content += "\n" + m.progress.ViewAs(percent) + "\n" + detail
 			elapsed := time.Since(m.started).Seconds()
 			if elapsed > 0 && state.Done > 0 && state.Phase == transfer.Transferring {
-				content += "  " + transferBytes(int64(float64(state.Done)/elapsed)) + "/s"
+				content += "  " + m.sizes.value(int64(float64(state.Done)/elapsed)) + "/s"
 			}
 		}
 	}

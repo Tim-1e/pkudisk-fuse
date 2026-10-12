@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dustin/go-humanize"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
 
@@ -14,7 +13,7 @@ type libraryStats interface {
 	Writable(context.Context, string) (bool, error)
 }
 
-func printLibraries(ctx context.Context, client libraryStats, entries []anyshare.Entry, output, status io.Writer) error {
+func printLibraries(ctx context.Context, client libraryStats, entries []anyshare.Entry, sizes sizeFormat, output, status io.Writer) error {
 	rows := make([][]string, 0, len(entries))
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -33,9 +32,9 @@ func printLibraries(ctx context.Context, client libraryStats, entries []anyshare
 		if err != nil {
 			fmt.Fprintf(status, "Library %q usage: %v\n", tuiText(entry.Name), err)
 		} else {
-			storage = humanize.IBytes(uint64(quota.Used))
+			storage = sizes.value(quota.Used)
 			if access == "RW" {
-				storage += " / " + humanize.IBytes(uint64(quota.Allocated))
+				storage += " / " + sizes.value(quota.Allocated)
 				if quota.Allocated > 0 {
 					storage += fmt.Sprintf(" (%.1f%%)", 100*float64(quota.Used)/float64(quota.Allocated))
 				}

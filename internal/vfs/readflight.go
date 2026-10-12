@@ -39,7 +39,7 @@ func (r *readFlight) read(ctx context.Context, trace *diagnostic.Logger, data []
 			filling := !r.finished
 			r.mu.Unlock()
 			if filling {
-				trace.Printf(ctx, "requested bytes ready: returned=%s; shared range continues filling", diagnostic.Size(n))
+				trace.Printf(ctx, "requested bytes ready: returned=%s; shared range continues filling", trace.Size(int64(n)))
 			}
 			return n, nil
 		}
@@ -59,7 +59,7 @@ func (f *FileSystem) fetchRange(entry anyshare.Entry, flight *readFlight) {
 	// transfer. The bounded fetch ends on its own deadline or mount shutdown.
 	defer flight.cancel()
 	defer flight.stop()
-	ctx, finish := f.opts.Trace.Begin(flight.ctx, "fetch file=%q id=%q revision=%q offset=%d length=%s blocks=%d", entry.Name, entry.ID, entry.Rev, flight.off, diagnostic.Size(flight.length), len(flight.keys))
+	ctx, finish := f.opts.Trace.Begin(flight.ctx, "fetch file=%q id=%q revision=%q offset=%d length=%s blocks=%d", entry.Name, entry.ID, entry.Rev, flight.off, f.opts.Trace.Size(flight.length), len(flight.keys))
 	f.opts.Trace.Printf(ctx, "cache miss; waiting for read slot (active=%d limit=%d)", len(f.readSlots), cap(f.readSlots))
 	err := f.acquireRead(ctx)
 	admitted := err == nil
@@ -77,7 +77,7 @@ func (f *FileSystem) fetchRange(entry anyshare.Entry, flight *readFlight) {
 	if err == nil && int64(n) != flight.length {
 		err = io.ErrUnexpectedEOF
 	}
-	f.opts.Trace.Printf(ctx, "remote range finished: received=%s; %s; waiting for cache lock", diagnostic.Size(n), diagnostic.Status(err))
+	f.opts.Trace.Printf(ctx, "remote range finished: received=%s; %s; waiting for cache lock", f.opts.Trace.Size(int64(n)), diagnostic.Status(err))
 	f.budgetMu.Lock()
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
@@ -85,7 +85,7 @@ func (f *FileSystem) fetchRange(entry anyshare.Entry, flight *readFlight) {
 	if err == nil && !f.closed && f.cacheRoomLocked(int64(n)) {
 		file, createErr := os.CreateTemp(f.cacheDir, "read-*.data")
 		if createErr == nil {
-			f.opts.Trace.Printf(ctx, "retaining range in disk cache: size=%s", diagnostic.Size(n))
+			f.opts.Trace.Printf(ctx, "retaining range in disk cache: size=%s", f.opts.Trace.Size(int64(n)))
 			_, writeErr := file.Write(flight.data)
 			closeErr := file.Close()
 			if writeErr == nil && closeErr == nil {
@@ -95,7 +95,7 @@ func (f *FileSystem) fetchRange(entry anyshare.Entry, flight *readFlight) {
 				for _, key := range flight.keys {
 					f.readFiles[key] = element
 				}
-				f.opts.Trace.Printf(ctx, "cache range retained: used=%s clean=%s", diagnostic.Size(f.cacheBytes), diagnostic.Size(f.readBytes))
+				f.opts.Trace.Printf(ctx, "cache range retained: used=%s clean=%s", f.opts.Trace.Size(f.cacheBytes), f.opts.Trace.Size(f.readBytes))
 			} else {
 				f.opts.Trace.Printf(ctx, "disk retention failed; fetched range remains available to its readers")
 				os.Remove(file.Name())

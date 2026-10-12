@@ -152,6 +152,10 @@ func TestRecoverEmptyAndRecords(t *testing.T) {
 	if err != nil || !strings.Contains(out, filepath.Join(cache, "data-file")) || !strings.Contains(out, "report.txt") || !strings.Contains(out, "copy") {
 		t.Fatal(out, err)
 	}
+	out, _, err = testExecute("recover", "--cache-dir", root, "-b")
+	if err != nil || !strings.Contains(out, "Size:       4 bytes") {
+		t.Fatal("recover exact size format", out, err)
+	}
 	out, _, err = testExecute("recover", "--cache-dir", root, "--json")
 	var records []vfs.RecoveryRecord
 	if err != nil || json.Unmarshal([]byte(out), &records) != nil || len(records) != 1 {
@@ -163,7 +167,7 @@ func TestRecoverEmptyAndRecords(t *testing.T) {
 }
 func TestProgressRedirectedProducesNoEscapes(t *testing.T) {
 	var out bytes.Buffer
-	progress := newCLIProgress("upload", &out)
+	progress := newCLIProgress("upload", &out, sizeFormat{})
 	for _, phase := range []transfer.Phase{transfer.Transferring, transfer.Finalizing, transfer.Complete} {
 		progress.Update(transfer.Progress{Done: 4, Total: 4, Phase: phase})
 	}

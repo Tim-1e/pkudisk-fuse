@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
 )
@@ -43,7 +42,7 @@ type utilAuth struct {
 func (o *utilAuth) add(cmd *cobra.Command) {
 	o.timeout = 10 * time.Minute
 	o.credentials.add(cmd.Flags())
-	cmd.Flags().DurationVar(&o.timeout, "io-timeout", o.timeout, "timeout for the server operation; accepts 30s, 10m, 1h")
+	cmd.Flags().DurationVarP(&o.timeout, "io-timeout", "t", o.timeout, "timeout for the server operation; accepts 30s, 10m, 1h")
 	cmd.Long += "\n\n" + authHelp
 }
 
@@ -72,6 +71,7 @@ func (o *utilAuth) open(cmd *cobra.Command) (*anyshare.Client, utilCloser, error
 
 func newUtilQuotaCommand() *cobra.Command {
 	var auth utilAuth
+	var sizes sizeFormat
 	cmd := &cobra.Command{
 		Use:   "quota",
 		Short: "Show library allocation, usage and writable remaining capacity",
@@ -96,13 +96,14 @@ queries are read-only and do not enumerate file contents.`,
 				return fmt.Errorf("read quota: %w", err)
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Allocated: %s (%d bytes)\n", humanize.IBytes(uint64(quota.Allocated)), quota.Allocated)
-			fmt.Fprintf(out, "Used:      %s (%d bytes)\n", humanize.IBytes(uint64(quota.Used)), quota.Used)
-			fmt.Fprintf(out, "Available: %s (%d bytes)\n", humanize.IBytes(uint64(quota.Available())), quota.Available())
+			fmt.Fprintf(out, "Allocated: %s\n", sizes.value(quota.Allocated))
+			fmt.Fprintf(out, "Used:      %s\n", sizes.value(quota.Used))
+			fmt.Fprintf(out, "Available: %s\n", sizes.value(quota.Available()))
 			return nil
 		},
 	}
 	auth.add(cmd)
+	sizes.add(cmd)
 	return cmd
 }
 
@@ -111,6 +112,7 @@ func newUtilSearchCommand() *cobra.Command {
 	var scope string
 	var limit int
 	var jsonOutput bool
+	var sizes sizeFormat
 	cmd := &cobra.Command{
 		Use:     "search KEYWORD",
 		Short:   "Search remote filenames",
@@ -158,7 +160,7 @@ are not requested. A search never changes remote files.`,
 			for _, file := range result.Files {
 				size := "-"
 				if file.Size >= 0 {
-					size = humanize.IBytes(uint64(file.Size))
+					size = sizes.value(file.Size)
 				}
 				rows = append(rows, []string{file.Name, size, file.Path, file.ID})
 			}
@@ -170,9 +172,10 @@ are not requested. A search never changes remote files.`,
 		},
 	}
 	auth.add(cmd)
+	sizes.add(cmd)
 	cmd.Flags().StringVar(&scope, "in", "", "restrict the search to a remote folder path or gns:// ID")
 	cmd.Flags().IntVar(&limit, "limit", 25, "maximum results to request (1-1000)")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "write matches and pagination fields as JSON")
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "write matches and pagination fields as JSON")
 	return cmd
 }
 

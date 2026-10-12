@@ -31,7 +31,7 @@ type authFlags struct {
 
 func (f *authFlags) addCredentials(set *pflag.FlagSet) {
 	set.StringVar(&f.server, "server", "", "AnyShare server URL (saved account's server or "+auth.DefaultServer+")")
-	set.StringVar(&f.username, "username", "", "login username (prompted if omitted)")
+	set.StringVarP(&f.username, "username", "u", "", "login username (prompted if omitted)")
 	set.StringVar(&f.passwordFile, "password-file", "", "read password from an owner-only file")
 	set.StringVar(&f.credentialsFile, "credentials-file", "", "read campus username/password from an owner-only JSON file")
 	set.BoolVar(&f.stdin, "password-stdin", false, "read password from standard input")
@@ -40,7 +40,7 @@ func (f *authFlags) addCredentials(set *pflag.FlagSet) {
 
 func (f *authFlags) add(set *pflag.FlagSet) {
 	f.addCredentials(set)
-	set.StringVar(&f.account, "account", "", "use this saved account instead of the default")
+	set.StringVarP(&f.account, "account", "a", "", "use this saved account instead of the default")
 	set.BoolVar(&f.noSave, "no-save", false, "use a one-off login without reading or saving accounts")
 }
 

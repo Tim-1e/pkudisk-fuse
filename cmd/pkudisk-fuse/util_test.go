@@ -114,8 +114,13 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 		}
 	})
 	t.Run("quota", func(t *testing.T) {
-		if out := run("util", "quota"); !strings.Contains(out, "127 bytes") {
+		if out := run("util", "quota"); !strings.Contains(out, "Available: 127 B") {
 			t.Fatal(out)
+		}
+		short := run("util", "quota", "-b", "-a", "fixture", "-t", "30s")
+		long := run("util", "quota", "--bytes", "--account", "fixture", "--io-timeout", "30s")
+		if short != long || !strings.Contains(short, "Available: 127\n") || strings.Contains(short, "127 B") {
+			t.Fatal(short, long)
 		}
 	})
 	for _, scope := range []string{"", "/Library/Reports", lib + "/reports"} {
@@ -146,6 +151,15 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 			}
 		})
 	}
+	t.Run("exact-search-json", func(t *testing.T) {
+		text := run("util", "search", "test", "-b", "-a", "fixture")
+		if !strings.Contains(text, "212") || strings.Contains(text, "212 B") {
+			t.Fatal(text)
+		}
+		if short, long := run("util", "search", "test", "-bj", "-a", "fixture"), run("util", "search", "test", "--json"); short != long {
+			t.Fatal("JSON changed with -b/-j")
+		}
+	})
 	t.Run("empty-json", func(t *testing.T) {
 		var response map[string]any
 		if err := json.Unmarshal([]byte(run("util", "search", "no-match", "--json")), &response); err != nil {

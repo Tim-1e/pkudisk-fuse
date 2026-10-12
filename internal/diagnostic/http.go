@@ -64,7 +64,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		finish("%s", Status(err))
 		return resp, err
 	}
-	l.Printf(ctx, "response headers: HTTP %d %s; body=%s; receiving body", resp.StatusCode, resp.Proto, Bytes(resp.ContentLength))
+	l.Printf(ctx, "response headers: HTTP %d %s; body=%s; receiving body", resp.StatusCode, resp.Proto, l.Size(resp.ContentLength))
 	// Content-Range is deliberately not echoed: a server may return arbitrary
 	// text. The read planner logs the trusted requested range and size instead.
 	resp.Body = &responseBody{ReadCloser: resp.Body, logger: l, ctx: ctx, finish: finish, expected: resp.ContentLength}
@@ -91,9 +91,9 @@ func (b *responseBody) Read(data []byte) (int, error) {
 	if err != nil {
 		b.done.Do(func() {
 			if err == io.EOF {
-				b.finish("body received=%s; expected=%s; stream ended", Bytes(b.bytes.Load()), Bytes(b.expected))
+				b.finish("body received=%s; expected=%s; stream ended", b.logger.Size(b.bytes.Load()), b.logger.Size(b.expected))
 			} else {
-				b.finish("body received=%s; %s", Bytes(b.bytes.Load()), Status(err))
+				b.finish("body received=%s; %s", b.logger.Size(b.bytes.Load()), Status(err))
 			}
 		})
 	}
@@ -103,7 +103,7 @@ func (b *responseBody) Read(data []byte) (int, error) {
 func (b *responseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.done.Do(func() {
-		b.finish("body closed; received=%s; expected=%s; %s", Bytes(b.bytes.Load()), Bytes(b.expected), Status(err))
+		b.finish("body closed; received=%s; expected=%s; %s", b.logger.Size(b.bytes.Load()), b.logger.Size(b.expected), Status(err))
 	})
 	return err
 }

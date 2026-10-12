@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.7` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.8` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -58,6 +58,22 @@ Help and shell completion work without a saved account or network connection. Co
 ```sh
 source <(bin/pkudisk-fuse completion bash)
 bin/pkudisk-fuse completion zsh > ~/.zsh/completions/_pkudisk-fuse
+```
+
+Sizes use readable IEC units by default (for example, `12 GiB`). Use
+`-b/--bytes` for exact integer byte counts in listings, quota, recovery records
+and transfer output. JSON always keeps numeric byte values. Mount diagnostics
+also honor `-b`; the TUI applies it to remote entries and transfer progress.
+
+Common short flags are `-a/--account`, `-j/--json`, `-f/--overwrite`,
+`-v/--verbose`, `-t/--io-timeout` and `-u/--username`, wherever the corresponding
+long flag is available. `-h/--help` remains help on every command.
+
+```sh
+bin/pkudisk-fuse ls -a work
+bin/pkudisk-fuse ls -b -a work
+bin/pkudisk-fuse util quota -b -a work
+bin/pkudisk-fuse download '/My library/report.pdf' ./report.pdf -f -t 30m
 ```
 
 Exit codes are `0` for success, `1` for an execution failure, and `2` for invalid commands, arguments, or flags. Results and requested help go to stdout; account announcements, errors, and CLI transfer progress go to stderr. `--json` provides JSON arrays for `ls`, `account ls`, and `recover`, including `[]` for empty results.
@@ -117,7 +133,7 @@ Library listings show human-readable `USED` and `RW`/`RO` access. Writable
 libraries include quota and usage percentage; read-only libraries show only
 used space. Usage or permission failures are marked unavailable/unknown,
 with details on stderr, so other libraries remain visible. Inside a library,
-regular files keep their byte sizes and folders display `-`. `ls --json` keeps
+regular files show readable sizes (`-b` selects bytes), and folders display `-`. `ls --json` keeps
 the original entry schema, including the remote directory size sentinel `-1`.
 
 `tui` opens a Bubble Tea terminal browser showing the selected account and remote path. The remote list scrolls, paginates, and supports fuzzy filtering with `/`. Use `j`/`k` or the arrows to move, Enter to open a folder, Backspace to go up, `u` to pick a local file or directory to upload, `d` to download the selected file or folder, `a` to save a folder as a server ZIP, `v` to download a folder through one ZIP and extract locally, `x` to extract an existing remote archive, `r` to refresh, and `?` for keyboard help. In the upload picker, Enter opens a directory, Space selects a file or directory, and `p` lets you type a local path. `~` is expanded in local path inputs.

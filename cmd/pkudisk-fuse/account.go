@@ -37,7 +37,7 @@ default selects one; remove deletes its saved credentials (not remote files).`,
 		Example: "  pkudisk-fuse account ls\n  pkudisk-fuse account ls --json",
 		RunE:    func(cmd *cobra.Command, _ []string) error { return lsAccounts(cmd.OutOrStdout(), jsonOutput) },
 	}
-	ls.Flags().BoolVar(&jsonOutput, "json", false, "output account summaries as a JSON array without passwords or tokens")
+	ls.Flags().BoolVarP(&jsonOutput, "json", "j", false, "output account summaries as a JSON array without passwords or tokens")
 	var opts authFlags
 	add := &cobra.Command{Use: "add [NAME]", Short: "Verify a campus login and save it locally", Args: cobra.MaximumNArgs(1),
 		Long: `Log in through PKU unified authentication and save the username, password,

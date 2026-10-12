@@ -148,6 +148,7 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 func newRemoteCommand(name string) *cobra.Command {
 	var credentials authFlags
 	var overwrite, jsonOutput, archive, viaArchive bool
+	var sizes sizeFormat
 	timeout := 10 * time.Minute
 	var mount mountOptions
 	cmd := &cobra.Command{Use: name, Args: cobra.NoArgs}
@@ -160,7 +161,8 @@ func newRemoteCommand(name string) *cobra.Command {
 to list accessible document libraries. Library rows show name, type,
 human-readable USED, RW/RO access, and gns:// ID. Writable library usage
 includes quota and percentage; read-only libraries show only used space.
-Inside a library, files show sizes in bytes; subfolders show - for size.
+Sizes use readable IEC units by default; -b/--bytes selects exact byte counts.
+Subfolders show - for size.
 Use --json for an array of entries with the original remote metadata.
 A file path is rejected; use download to retrieve its contents.
 
@@ -188,7 +190,7 @@ scanning and transferring the tree. Account quotas and file policies apply.
 
 ` + remoteHelp
 		cmd.Example = "  pkudisk-fuse upload ./report.pdf '/My library/Reports/'\n  pkudisk-fuse upload ./Photos '/My library/'\n  pkudisk-fuse upload ./Photos '/My library/' --overwrite"
-		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace matching files and merge directories; keep unrelated entries")
+		cmd.Flags().BoolVarP(&overwrite, "overwrite", "f", false, "replace matching files and merge directories; keep unrelated entries")
 	case "download":
 		cmd.Use = "download REMOTE-PATH [LOCAL-DESTINATION]"
 		cmd.Args = cobra.RangeArgs(1, 2)
@@ -217,7 +219,7 @@ Progress goes to stderr. --io-timeout bounds the entire operation.
 
 ` + remoteHelp
 		cmd.Example = "  pkudisk-fuse download '/My library/report.pdf' ~/Downloads/\n  pkudisk-fuse download '/My library/Photos' ~/Downloads/\n  pkudisk-fuse download '/My library/Photos' ./photos.zip --archive\n  pkudisk-fuse download '/My library/Photos' ./photos --via-archive"
-		cmd.Flags().BoolVar(&overwrite, "overwrite", false, "atomically replace matching files/ZIPs and merge directories; keep unrelated entries")
+		cmd.Flags().BoolVarP(&overwrite, "overwrite", "f", false, "atomically replace matching files/ZIPs and merge directories; keep unrelated entries")
 		cmd.Flags().BoolVar(&archive, "archive", false, "package a remote directory on the server and save it as a ZIP")
 		cmd.Flags().BoolVar(&viaArchive, "via-archive", false, "download a directory as one server ZIP, then extract locally")
 	case "extract":
@@ -247,7 +249,7 @@ continue because the official protocol exposes no job cancellation endpoint.
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nReads return when their requested bytes arrive; the shared range keeps filling.\nOnly a complete, validated range enters the disk cache. Unmount stops active\nfills. Size flags accept bytes or units such as 4MiB and 10GiB. Larger fetches\nreduce round trips but use more bandwidth and memory. Set --read-whole-file 0\nand --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n--verbose explains operations, cache decisions, queue waits and HTTP request\nphases on stderr. START and END lines share an operation number; a START\nwithout END shows an outstanding operation. Logs include paths and file IDs,\nbut omit credentials, request bodies and signed URL paths/queries.\n--debug additionally prints raw filesystem-driver diagnostics.\n\n" + remoteHelp
+		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nReads return when their requested bytes arrive; the shared range keeps filling.\nOnly a complete, validated range enters the disk cache. Unmount stops active\nfills. Size flags accept bytes or units such as 4MiB and 10GiB.\nDiagnostic sizes use IEC units; -b/--bytes shows exact byte counts. Larger fetches\nreduce round trips but use more bandwidth and memory. Set --read-whole-file 0\nand --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n--verbose explains operations, cache decisions, queue waits and HTTP request\nphases on stderr. START and END lines share an operation number; a START\nwithout END shows an outstanding operation. Logs include paths and file IDs,\nbut omit credentials, request bodies and signed URL paths/queries.\n--debug additionally prints raw filesystem-driver diagnostics.\n\n" + remoteHelp
 		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --verbose 2> mount.log"
 		f := cmd.Flags()
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
@@ -263,14 +265,20 @@ continue because the official protocol exposes no job cancellation endpoint.
 		f.DurationVar(&mount.refreshInterval, "refresh-interval", time.Hour, "renew idle sessions at this interval; 0 disables scheduled renewal")
 		f.BoolVar(&mount.readOnly, "read-only", false, "prevent remote file changes")
 		f.BoolVar(&mount.debug, "debug", false, "print FUSE protocol diagnostics to stderr")
-		f.BoolVar(&mount.verbose, "verbose", false, "explain mount operations, cache/fetch decisions and HTTP timing on stderr; credentials and signed URLs are omitted")
+		f.BoolVarP(&mount.verbose, "verbose", "v", false, "explain mount operations, cache/fetch decisions and HTTP timing on stderr; credentials and signed URLs are omitted")
 	}
 	credentials.add(cmd.Flags())
+	if name == "ls" || name == "upload" || name == "download" || name == "mount" || name == "tui" {
+		sizes.add(cmd)
+		if name == "tui" {
+			cmd.Flags().Lookup("bytes").Usage = "show exact byte counts for remote entries and transfer progress"
+		}
+	}
 	if name == "ls" {
-		cmd.Flags().BoolVar(&jsonOutput, "json", false, "write an array of entries as JSON to stdout")
+		cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "write an array of entries as JSON to stdout")
 	}
 	if name == "upload" || name == "download" || name == "extract" || name == "tui" || name == "mount" {
-		cmd.Flags().DurationVar(&timeout, "io-timeout", timeout, "timeout per operation (including a whole directory transfer); accepts 30s, 10m, 1h")
+		cmd.Flags().DurationVarP(&timeout, "io-timeout", "t", timeout, "timeout per operation (including a whole directory transfer); accepts 30s, 10m, 1h")
 	}
 	cmd.Long += "\n\n" + authHelp
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -302,6 +310,7 @@ continue because the official protocol exposes no job cancellation endpoint.
 		credentials.input, credentials.output = cmd.InOrStdin(), cmd.ErrOrStderr()
 		if name == "mount" && mount.verbose {
 			mount.trace = diagnostic.New(cmd.ErrOrStderr())
+			mount.trace.SetBytes(sizes.bytes)
 			credentials.trace = mount.trace
 			mount.trace.Printf(cmd.Context(), "mount diagnostics enabled; version=%s OS=%s architecture=%s", installedVersion(), runtime.GOOS, runtime.GOARCH)
 		}
@@ -327,9 +336,9 @@ continue because the official protocol exposes no job cancellation endpoint.
 				return err
 			}
 			if !jsonOutput && (selector == "/" || selector == "") {
-				return printLibraries(cmd.Context(), client, entries, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return printLibraries(cmd.Context(), client, entries, sizes, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
-			return printEntries(cmd.OutOrStdout(), entries, jsonOutput)
+			return printEntries(cmd.OutOrStdout(), entries, jsonOutput, sizes)
 		case "upload", "download", "extract":
 			destination := ""
 			if len(args) == 2 {
@@ -337,9 +346,9 @@ continue because the official protocol exposes no job cancellation endpoint.
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			return runTransfer(ctx, client, name, args[0], destination, overwrite, archive, viaArchive, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runTransfer(ctx, client, name, args[0], destination, overwrite, archive, viaArchive, sizes, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		case "tui":
-			return runTUI(cmd.Context(), client, account, server, timeout, cmd.InOrStdin(), cmd.OutOrStdout())
+			return runTUI(cmd.Context(), client, account, server, timeout, sizes, cmd.InOrStdin(), cmd.OutOrStdout())
 		case "mount":
 			mount.mountpoint = args[0]
 			mount.timeout = timeout
@@ -370,7 +379,7 @@ func listRemote(ctx context.Context, client *anyshare.Client, selector string) (
 	}
 	return client.List(ctx, entry.ID)
 }
-func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error {
+func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool, sizes sizeFormat) error {
 	if entries == nil {
 		entries = []anyshare.Entry{}
 	}
@@ -391,15 +400,16 @@ func printEntries(output io.Writer, entries []anyshare.Entry, asJSON bool) error
 		}
 		size := "-"
 		if !e.Dir && e.Size >= 0 {
-			size = fmt.Sprint(e.Size)
+			size = sizes.value(e.Size)
 		}
 		rows = append(rows, []string{e.Name, typ, size, e.ID})
 	}
-	return printTable(output, []string{"NAME", "TYPE", "BYTES", "ID"}, rows, 2)
+	return printTable(output, []string{"NAME", "TYPE", "SIZE", "ID"}, rows, 2)
 }
 func newRecoverCommand() *cobra.Command {
 	var cache string
 	var jsonOutput bool
+	var sizes sizeFormat
 	cmd := &cobra.Command{Use: "recover", Short: "Inspect uncommitted local writes retained in the mount cache", Args: cobra.NoArgs,
 		Long: `Find local cached file contents that have not been committed to PKU NetDisk.
 This is useful after an upload failed, a write conflicted, or a mount ended
@@ -417,7 +427,7 @@ checking that your copies or uploads contain the expected data.
 
 Output: human-readable records, or a JSON array with --json. Empty results are
 reported explicitly; JSON uses []. Exit codes: 0 success, 1 scan failure,
-2 invalid arguments.`,
+2 invalid arguments. Sizes use IEC units by default; -b selects exact bytes.`,
 		Example: "  pkudisk-fuse recover\n  pkudisk-fuse recover --cache-dir ~/.cache/pkudisk-fuse --json\n  cp /cache/mount-EXAMPLE/data-EXAMPLE ~/recovered-report.pdf\n  pkudisk-fuse upload ~/recovered-report.pdf '/My library/recovered-report.pdf'",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cache = localfile.ExpandPath(cache)
@@ -441,14 +451,15 @@ reported explicitly; JSON uses []. Exit codes: 0 success, 1 scan failure,
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Found %d uncommitted cached file(s) in %s:\n", len(records), cache)
 			for _, r := range records {
-				fmt.Fprintf(cmd.OutOrStdout(), "\nLocal file: %s\nRemote:     %s (%s)\nSize:       %d bytes\nRevision:   %s\nUpdated:    %s\n", r.Data, r.Entry.Name, r.Entry.ID, r.Entry.Size, r.Entry.Rev, r.Updated.Format(time.RFC3339))
+				fmt.Fprintf(cmd.OutOrStdout(), "\nLocal file: %s\nRemote:     %s (%s)\nSize:       %s\nRevision:   %s\nUpdated:    %s\n", r.Data, r.Entry.Name, r.Entry.ID, sizes.label(r.Entry.Size), r.Entry.Rev, r.Updated.Format(time.RFC3339))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "\nStop the affected mount, copy needed local files, then upload to your chosen destination.\nFor a recovery example, run 'pkudisk-fuse recover --help'.")
 			return nil
 		},
 	}
+	sizes.add(cmd)
 	cmd.Flags().StringVar(&cache, "cache-dir", defaultCache(), "mount cache parent or a specific mount cache directory to scan")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output recovery records as a JSON array, including [] when empty")
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "output recovery records as a JSON array, including [] when empty")
 	return cmd
 }
 func newCompletionCommand() *cobra.Command {

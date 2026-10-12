@@ -18,7 +18,7 @@ func TestListingsAlignWideNames(t *testing.T) {
 		{Name: "北大网盘公共资源", Type: "department_doc_lib", Size: -1, ID: "gns://public"},
 		{Name: "🖼️ Photos é", Type: "user_doc_lib", Size: 12345, ID: "gns://user"},
 	}
-	if err := printEntries(&output, entries, false); err != nil {
+	if err := printEntries(&output, entries, false, sizeFormat{}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
@@ -79,7 +79,7 @@ func (libraryFixture) Writable(_ context.Context, id string) (bool, error) {
 func TestLibraryListingDisplaysUsageAndAccess(t *testing.T) {
 	var output, status bytes.Buffer
 	entries := []anyshare.Entry{{Name: "12TB_文档库", Type: "custom_doc_lib", ID: "gns://custom", Dir: true, Size: -1}, {Name: "北大网盘公共资源", Type: "department_doc_lib", ID: "gns://public", Dir: true, Size: -1}, {Name: "unknown", ID: "gns://unknown", Dir: true, Size: -1}}
-	if err := printLibraries(context.Background(), libraryFixture{}, entries, &output, &status); err != nil {
+	if err := printLibraries(context.Background(), libraryFixture{}, entries, sizeFormat{}, &output, &status); err != nil {
 		t.Fatal(err)
 	}
 	text := output.String()
@@ -94,14 +94,14 @@ func TestLibraryListingDisplaysUsageAndAccess(t *testing.T) {
 func TestFolderSizeMarkerOnlyChangesTextOutput(t *testing.T) {
 	entry := anyshare.Entry{ID: "gns://lib/folder", Name: "中文目录", Dir: true, Size: -1}
 	var output bytes.Buffer
-	if err := printEntries(&output, []anyshare.Entry{entry}, false); err != nil {
+	if err := printEntries(&output, []anyshare.Entry{entry}, false, sizeFormat{}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), "-1") || !strings.Contains(output.String(), "folder") {
 		t.Fatal(output.String())
 	}
 	output.Reset()
-	if err := printEntries(&output, []anyshare.Entry{entry}, true); err != nil {
+	if err := printEntries(&output, []anyshare.Entry{entry}, true, sizeFormat{bytes: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"size": -1`) {

@@ -93,7 +93,7 @@ func (f *FileSystem) cacheRoomLocked(size int64) bool {
 			return false
 		}
 		file := oldest.Value.(cachedFile)
-		f.opts.Trace.Printf(context.Background(), "evict clean cache: id=%q revision=%q offset=%d size=%s; making room in shared budget", file.key.id, file.key.rev, file.key.off, diagnostic.Size(file.size))
+		f.opts.Trace.Printf(context.Background(), "evict clean cache: id=%q revision=%q offset=%d size=%s; making room in shared budget", file.key.id, file.key.rev, file.key.off, f.opts.Trace.Size(file.size))
 		if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			f.opts.Trace.Printf(context.Background(), "clean-cache eviction failed: %s", diagnostic.Status(err))
 			return false
@@ -158,7 +158,7 @@ func (f *FileSystem) cachedReadLocked(ctx context.Context, entry anyshare.Entry,
 			continue
 		}
 		cached := element.Value.(cachedFile)
-		f.opts.Trace.Printf(ctx, "disk cache hit: file=%q offset=%d requested=%s; reading local cache", entry.Name, off, diagnostic.Size(len(data)))
+		f.opts.Trace.Printf(ctx, "disk cache hit: file=%q offset=%d requested=%s; reading local cache", entry.Name, off, f.opts.Trace.Size(int64(len(data))))
 		file, err := os.Open(cached.path)
 		if err != nil {
 			return 0, err, true
@@ -182,7 +182,7 @@ func (f *FileSystem) readBlock(ctx context.Context, entry anyshare.Entry, data [
 	}
 	if n, err, ok := f.cachedReadLocked(ctx, entry, data, off, key); ok {
 		f.budgetMu.Unlock()
-		f.opts.Trace.Printf(ctx, "cache read returned=%s; %s", diagnostic.Size(n), diagnostic.Status(err))
+		f.opts.Trace.Printf(ctx, "cache read returned=%s; %s", f.opts.Trace.Size(int64(n)), diagnostic.Status(err))
 		return n, err
 	}
 	flight := f.readFlights[key]
@@ -283,11 +283,11 @@ func (f *FileSystem) readAt(ctx context.Context, entry anyshare.Entry, data []by
 // Remote I/O does not hold the node lock, allowing stat and cached reads to
 // proceed while another reader is waiting on the server.
 func (n *Node) readAt(ctx context.Context, data []byte, off int64) (result int, resultErr error) {
-	ctx, finish := n.f.opts.Trace.Begin(ctx, "read file=%q offset=%d requested=%s", n.traceName, off, diagnostic.Size(len(data)))
-	defer func() { finish("returned=%s; %s", diagnostic.Size(result), diagnostic.Status(resultErr)) }()
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "read file=%q offset=%d requested=%s", n.traceName, off, n.f.opts.Trace.Size(int64(len(data))))
+	defer func() { finish("returned=%s; %s", n.f.opts.Trace.Size(int64(result)), diagnostic.Status(resultErr)) }()
 	n.f.opts.Trace.Printf(ctx, "waiting for file lock")
 	n.mu.Lock()
-	n.f.opts.Trace.Printf(ctx, "file lock acquired; size=%s revision=%q local-write-cache=%t", diagnostic.Size(n.entry.Size), n.entry.Rev, n.cache != nil)
+	n.f.opts.Trace.Printf(ctx, "file lock acquired; size=%s revision=%q local-write-cache=%t", n.f.opts.Trace.Size(n.entry.Size), n.entry.Rev, n.cache != nil)
 	if off < 0 {
 		n.mu.Unlock()
 		return 0, syscall.EINVAL
@@ -317,7 +317,7 @@ func (n *Node) readAt(ctx context.Context, data []byte, off int64) (result int, 
 	}
 	n.readEnd, n.readRev = off+int64(len(data)), entry.Rev
 	fetchSize := n.readSize
-	n.f.opts.Trace.Printf(ctx, "read plan: whole-file=%t sequential=%t base=%s fetch-target=%s; releasing file lock for remote/cache read", blockSize >= entry.Size, sequential, diagnostic.Size(blockSize), diagnostic.Size(fetchSize))
+	n.f.opts.Trace.Printf(ctx, "read plan: whole-file=%t sequential=%t base=%s fetch-target=%s; releasing file lock for remote/cache read", blockSize >= entry.Size, sequential, n.f.opts.Trace.Size(blockSize), n.f.opts.Trace.Size(fetchSize))
 	n.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, n.f.opts.IOTimeout)
 	defer cancel()

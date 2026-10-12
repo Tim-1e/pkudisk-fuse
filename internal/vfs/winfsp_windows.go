@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
-	"github.com/thezzisu/pkudisk-fuse/internal/diagnostic"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/winfsp/cgofuse/fuse"
 	"golang.org/x/sys/windows"
@@ -283,7 +282,7 @@ func (w *WinFsp) Getattr(value string, stat *fuse.Stat_t, fh uint64) (result int
 		mode &= 0555
 	}
 	*stat = winStat(node.entry, mode)
-	w.core.opts.Trace.Printf(ctx, "attributes returned: size=%d mode=%#o", stat.Size, stat.Mode)
+	w.core.opts.Trace.Printf(ctx, "attributes returned: size=%s mode=%#o", w.core.opts.Trace.Size(stat.Size), stat.Mode)
 	return 0
 }
 
@@ -333,7 +332,7 @@ func (w *WinFsp) Open(value string, flags int) (result int, fhOut uint64) {
 }
 
 func (w *WinFsp) Read(value string, data []byte, off int64, fh uint64) (result int) {
-	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp read path=%q handle=%d offset=%d requested=%s", value, fh, off, diagnostic.Size(len(data)))
+	ctx, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp read path=%q handle=%d offset=%d requested=%s", value, fh, off, w.core.opts.Trace.Size(int64(len(data))))
 	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil {
@@ -350,7 +349,7 @@ func (w *WinFsp) Read(value string, data []byte, off int64, fh uint64) (result i
 }
 
 func (w *WinFsp) Write(value string, data []byte, off int64, fh uint64) (result int) {
-	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp write path=%q handle=%d offset=%d requested=%s", value, fh, off, diagnostic.Size(len(data)))
+	_, finish := w.core.opts.Trace.Begin(w.ctx, "WinFsp write path=%q handle=%d offset=%d requested=%s", value, fh, off, w.core.opts.Trace.Size(int64(len(data))))
 	defer func() { finish("%s", winResult(result)) }()
 	handle := w.handle(fh)
 	if handle == nil || !handle.writable {

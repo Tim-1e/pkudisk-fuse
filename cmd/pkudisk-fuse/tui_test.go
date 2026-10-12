@@ -168,3 +168,13 @@ func TestTUIPickerSelectsDirectories(t *testing.T) {
 	}
 	model.cancel()
 }
+
+func TestTUIRemoteSizesFollowBytesMode(t *testing.T) {
+	entry := anyshare.Entry{ID: "gns://library/file", Name: "test.bin", Size: 1536}
+	if text := (remoteItem{entry: entry}).Description(); !strings.Contains(text, "1.5 KiB") {
+		t.Fatal(text)
+	}
+	if text := (remoteItem{entry: entry, sizes: sizeFormat{bytes: true}}).Description(); !strings.HasPrefix(text, "1536") {
+		t.Fatal(text)
+	}
+}

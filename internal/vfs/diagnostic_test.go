@@ -52,7 +52,7 @@ func TestVerboseReadExplainsFetchHitAndPromotion(t *testing.T) {
 	if err != nil || b.reads.Load() != 1 || b.downloads.Load() != 0 {
 		t.Fatal("verbose mode changed cache behavior", err)
 	}
-	for _, want := range []string{"START read file=\"photo.jpg\"", "read plan: whole-file=true", "cache miss; waiting for read slot", "read slot acquired", "length=5.0 MiB (5242880 bytes)", "remote range finished", "retaining range in disk cache", "disk cache hit", "END read file=", "promoted complete clean read cache", "file is clean; no upload", "elapsed="} {
+	for _, want := range []string{"START read file=\"photo.jpg\"", "read plan: whole-file=true", "cache miss; waiting for read slot", "read slot acquired", "length=5.0 MiB", "remote range finished", "retaining range in disk cache", "disk cache hit", "END read file=", "promoted complete clean read cache", "file is clean; no upload", "elapsed="} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing read diagnostic %q", want)
 		}

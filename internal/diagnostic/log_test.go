@@ -140,3 +140,23 @@ func TestHTTPTransportErrorPreservedWithoutSensitiveText(t *testing.T) {
 		t.Fatal("unknown error text was exposed")
 	}
 }
+
+func TestDiagnosticSizesFollowBytesMode(t *testing.T) {
+	var output bytes.Buffer
+	logger := New(&output)
+	if got := logger.Size(1536).String(); got != "1.5 KiB" {
+		t.Fatal(got)
+	}
+	logger.SetBytes(true)
+	if got := logger.Size(1536).String(); got != "1536 bytes" {
+		t.Fatal(got)
+	}
+	if got := logger.Size(-1).String(); got != "unknown" {
+		t.Fatal(got)
+	}
+	var disabled *Logger
+	disabled.SetBytes(true)
+	if got := disabled.Size(1536).String(); got != "1.5 KiB" {
+		t.Fatal(got)
+	}
+}

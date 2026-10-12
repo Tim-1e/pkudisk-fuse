@@ -205,6 +205,12 @@ func TestLiveUtilityTransfers(t *testing.T) {
 			t.Fatal("existing local destination overwritten without a flag")
 		}
 		mustRun("download", remote+"/test.txt", copied, "--overwrite")
+		formatted := mustRun("download", remote+"/test.txt", copied, "-f")
+		exact := mustRun("download", remote+"/test.txt", copied, "-f", "-b", "-t", "30s")
+		if !strings.Contains(formatted, "11 B") || !strings.Contains(exact, "11 bytes") {
+			t.Fatal("transfer size modes differ from actual bytes")
+		}
+
 		packed := filepath.Join(local, "source.zip")
 		mustRun("download", selected.ID, packed, "--archive")
 		reader, err := zip.OpenReader(packed)
@@ -269,8 +275,12 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := mustRun("util", "quota")
-		if !strings.Contains(text, fmt.Sprintf("(%d bytes)", quota.Allocated)) {
+		readable := mustRun("util", "quota")
+		if !strings.Contains(readable, "GiB") && !strings.Contains(readable, "TiB") {
+			t.Fatal("quota is not readable by default")
+		}
+		text := mustRun("util", "quota", "-b")
+		if !strings.Contains(text, fmt.Sprintf("Allocated: %d", quota.Allocated)) {
 			t.Fatal("quota CLI differs from library aggregate")
 		}
 		t.Log("library aggregate quota and CLI output verified")

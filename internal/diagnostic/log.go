@@ -17,8 +17,9 @@ import (
 )
 
 type Logger struct {
-	log  *log.Logger
-	next atomic.Uint64
+	log      *log.Logger
+	next     atomic.Uint64
+	rawBytes atomic.Bool
 }
 
 type operationKey struct{}
@@ -54,17 +55,32 @@ func (l *Logger) Begin(ctx context.Context, format string, args ...any) (context
 	}
 }
 
-func Bytes(size int64) string {
-	if size < 0 {
-		return "unknown"
+// SetBytes is configured before the mount starts issuing requests.
+func (l *Logger) SetBytes(enabled bool) {
+	if l != nil {
+		l.rawBytes.Store(enabled)
 	}
-	return fmt.Sprintf("%s (%d bytes)", humanize.IBytes(uint64(size)), size)
 }
 
-// Size defers human-readable formatting until diagnostics are enabled.
-type Size int64
+// Size delays formatting until an enabled diagnostic logger consumes it.
+func (l *Logger) Size(n int64) fmt.Stringer {
+	return sizeValue{n: n, raw: l != nil && l.rawBytes.Load()}
+}
 
-func (s Size) String() string { return Bytes(int64(s)) }
+type sizeValue struct {
+	n   int64
+	raw bool
+}
+
+func (s sizeValue) String() string {
+	if s.n < 0 {
+		return "unknown"
+	}
+	if s.raw {
+		return fmt.Sprintf("%d bytes", s.n)
+	}
+	return humanize.IBytes(uint64(s.n))
+}
 
 type Errno syscall.Errno
 

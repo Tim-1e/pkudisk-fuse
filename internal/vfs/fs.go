@@ -110,7 +110,7 @@ func (n *Node) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.fillLocked(&out.Attr)
-	n.f.opts.Trace.Printf(ctx, "attributes returned: size=%d mode=%#o", out.Size, out.Mode)
+	n.f.opts.Trace.Printf(ctx, "attributes returned: size=%s mode=%#o", n.f.opts.Trace.Size(int64(out.Size)), out.Mode)
 	return 0
 }
 

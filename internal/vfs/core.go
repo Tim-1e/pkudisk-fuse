@@ -154,7 +154,7 @@ func New(backend Backend, opts Options) (*FileSystem, error) {
 	}
 	f := &FileSystem{backend: backend, opts: opts, cacheDir: cache, listCache: map[string]cachedList{}, listFlights: make(map[string]*listFlight), readFiles: make(map[cacheKey]*list.Element), readFlights: make(map[cacheKey]*readFlight), readSlots: make(chan struct{}, read.Concurrency)}
 	f.readCtx, f.cancelReads = context.WithCancel(context.Background())
-	opts.Trace.Printf(context.Background(), "mount policy: whole-file=%s block=%s read-ahead=%s concurrency=%d disk-budget=%s metadata-TTL=%s I/O-timeout=%s read-only=%t", diagnostic.Size(read.WholeFile), diagnostic.Size(read.BlockSize), diagnostic.Size(read.ReadAhead), read.Concurrency, diagnostic.Size(opts.CacheLimit), opts.TTL, opts.IOTimeout, opts.ReadOnly)
+	opts.Trace.Printf(context.Background(), "mount policy: whole-file=%s block=%s read-ahead=%s concurrency=%d disk-budget=%s metadata-TTL=%s I/O-timeout=%s read-only=%t", opts.Trace.Size(read.WholeFile), opts.Trace.Size(read.BlockSize), opts.Trace.Size(read.ReadAhead), read.Concurrency, opts.Trace.Size(opts.CacheLimit), opts.TTL, opts.IOTimeout, opts.ReadOnly)
 	if opts.Root != nil {
 		if !opts.Root.Dir {
 			f.cancelReads()
@@ -331,7 +331,7 @@ func (n *Node) reserveLocked(size int64) error {
 	defer f.budgetMu.Unlock()
 	delta := size - n.charged
 	if delta > 0 && !f.cacheRoomLocked(delta) {
-		f.opts.Trace.Printf(context.Background(), "write cache allocation denied: file=%q requested=%s budget=%s used=%s", n.entry.Name, diagnostic.Size(size), diagnostic.Size(f.opts.CacheLimit), diagnostic.Size(f.cacheBytes))
+		f.opts.Trace.Printf(context.Background(), "write cache allocation denied: file=%q requested=%s budget=%s used=%s", n.entry.Name, f.opts.Trace.Size(size), f.opts.Trace.Size(f.opts.CacheLimit), f.opts.Trace.Size(f.cacheBytes))
 		return syscall.ENOSPC
 	}
 	f.cacheBytes += delta
@@ -348,7 +348,7 @@ func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) (result err
 	}
 	if !truncate {
 		if file, size := n.f.takeCachedFile(n.entry); file != nil {
-			n.f.opts.Trace.Printf(ctx, "promoted complete clean read cache; reused=%s; no download", diagnostic.Size(size))
+			n.f.opts.Trace.Printf(ctx, "promoted complete clean read cache; reused=%s; no download", n.f.opts.Trace.Size(size))
 			n.cache, n.cachePath, n.charged = file, file.Name(), size
 			return nil
 		}
@@ -366,7 +366,7 @@ func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) (result err
 		return err
 	}
 	if !truncate && size > 0 {
-		n.f.opts.Trace.Printf(ctx, "downloading existing file into write cache: size=%s", diagnostic.Size(size))
+		n.f.opts.Trace.Printf(ctx, "downloading existing file into write cache: size=%s", n.f.opts.Trace.Size(size))
 		err = n.f.backend.Download(ctx, n.entry, file)
 	}
 	if err != nil {
@@ -418,7 +418,7 @@ func (n *Node) resizeLocked(size int64) error {
 }
 
 func (n *Node) flushLocked(ctx context.Context) (result error) {
-	ctx, finish := n.f.opts.Trace.Begin(ctx, "flush file=%q size=%s", n.entry.Name, diagnostic.Size(n.entry.Size))
+	ctx, finish := n.f.opts.Trace.Begin(ctx, "flush file=%q size=%s", n.entry.Name, n.f.opts.Trace.Size(n.entry.Size))
 	defer func() { finish("%s", diagnostic.Status(result)) }()
 	if !n.dirty {
 		n.f.opts.Trace.Printf(ctx, "file is clean; no upload")
@@ -459,7 +459,7 @@ func (n *Node) disposeLocked() {
 	n.cache.Close()
 	n.cache = nil
 	if !n.dirty {
-		n.f.opts.Trace.Printf(context.Background(), "write cache released: file=%q clean=true unlinked=%t size=%s", n.entry.Name, n.unlinked, diagnostic.Size(n.charged))
+		n.f.opts.Trace.Printf(context.Background(), "write cache released: file=%q clean=true unlinked=%t size=%s", n.entry.Name, n.unlinked, n.f.opts.Trace.Size(n.charged))
 		os.Remove(n.cachePath + ".json")
 		if !n.unlinked && n.entry.Rev != "" {
 			n.f.retainCachedFile(n.entry, n.cachePath, n.charged)
