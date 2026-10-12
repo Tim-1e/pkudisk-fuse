@@ -66,6 +66,7 @@ const (
 	pickerMode
 	pathMode
 	confirmMode
+	sharingMode
 )
 
 type directoryMsg struct {
@@ -119,6 +120,7 @@ type tuiModel struct {
 	started             time.Time
 	activity            string
 	conflict            string
+	sharing             *tuiSharing
 }
 
 func interactiveIO(in io.Reader, out io.Writer) bool {
@@ -156,6 +158,7 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 			key.NewBinding(key.WithKeys("backspace"), key.WithHelp("backspace", "parent")),
 			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "upload")),
 			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "download")),
+			key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "share")),
 		}
 	}
 	remote.AdditionalFullHelpKeys = func() []key.Binding {
@@ -167,6 +170,7 @@ func newTUIModel(ctx context.Context, backend browserBackend, account, server st
 			key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "download folder ZIP")),
 			key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "download folder via ZIP")),
 			key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "extract remote archive")),
+			key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "share / links / revoke")),
 			key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 			key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "library root")),
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel operation")),
@@ -280,6 +284,8 @@ func (m *tuiModel) stopOperation() {
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	defer m.layout()
 	switch msg := message.(type) {
+	case sharingMsg:
+		return m, m.sharingResult(msg)
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, 20)
 		m.height = max(msg.Height, 8)
@@ -381,7 +387,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.remote, cmd = m.remote.Update(msg)
 			return m, cmd
 		}
-		if k == "q" && m.mode != pathMode {
+		if k == "q" && m.mode != pathMode && (m.mode != sharingMode || m.busy) {
 			return m, m.quit()
 		}
 		if m.busy {
@@ -392,6 +398,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Cancelling…"
 			}
 			return m, nil
+		}
+		if m.mode == sharingMode {
+			return m, m.sharingKey(msg)
 		}
 		switch m.mode {
 		case pickerMode:
@@ -448,6 +457,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		default:
 			switch k {
+			case "s":
+				return m, m.openSharing()
 			case "enter", "l":
 				entry := m.selected()
 				if entry == nil {
@@ -527,6 +538,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(message)
 		return m, cmd
 	}
+	if m.mode == sharingMode {
+		var cmd tea.Cmd
+		m.sharing.choices, cmd = m.sharing.choices.Update(message)
+		return m, cmd
+	}
 	var cmd tea.Cmd
 	m.remote, cmd = m.remote.Update(message)
 	return m, cmd
@@ -544,6 +560,9 @@ func (m *tuiModel) quit() tea.Cmd {
 }
 
 func (m *tuiModel) layout() {
+	if m.sharing != nil {
+		m.sharing.layout(m.width, m.height)
+	}
 	overhead := 8
 	if m.busy {
 		overhead += 2
@@ -574,6 +593,8 @@ func (m *tuiModel) View() tea.View {
 	header := ansi.Truncate(accent.Render("PKU NetDisk")+"  Account: "+tuiText(m.account), m.width-4, "…") + "\n" + muted.Render(ansi.Truncate(tuiText(m.server), m.width-4, "…")) + "\n" + ansi.Truncate("Remote: "+tuiText(m.location.path), m.width-4, "…") + "\n"
 	var content string
 	switch m.mode {
+	case sharingMode:
+		content = m.sharing.view()
 	case pickerMode:
 		content = accent.Render("Choose a local file or directory to upload") + "\nLocal: " + tuiText(m.picker.CurrentDirectory) + "\n\n" + m.picker.View() + "\n\n↑/↓ move • Enter open folder • Space select • Backspace parent\np type path • Esc cancel"
 	case pathMode:

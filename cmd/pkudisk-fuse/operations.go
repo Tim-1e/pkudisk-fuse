@@ -10,45 +10,22 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"github.com/thezzisu/pkudisk-fuse/internal/auth"
 )
 
-func newUtilCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "util",
-		Short: "Use small server-side NetDisk utilities",
-		Long: `Run focused server-side operations without mounting or copying bytes
-through the local machine. These operations are intentionally separate from
-file transfers: the server's permissions, policies and storage layout decide
-whether they are available.
-
-Commands:
-  quota   show the account's server allocation and writable remaining bytes
-  search  search remote filenames, optionally inside a folder
-  copy    copy a remote file or folder into another remote folder
-
-Use 'pkudisk-fuse util COMMAND --help' for request scope, examples and limits.`,
-		Example: "  pkudisk-fuse util quota\n  pkudisk-fuse util search report\n  pkudisk-fuse util copy '/Library/report.pdf' '/Library/Archive'",
-		RunE:    func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
-	}
-	cmd.AddCommand(newUtilQuotaCommand(), newUtilSearchCommand(), newUtilCopyCommand())
-	return cmd
-}
-
-type utilAuth struct {
+type commandAuth struct {
 	credentials authFlags
 	timeout     time.Duration
 }
 
-func (o *utilAuth) add(cmd *cobra.Command) {
+func (o *commandAuth) add(cmd *cobra.Command) {
 	o.timeout = 10 * time.Minute
 	o.credentials.add(cmd.Flags())
 	cmd.Flags().DurationVarP(&o.timeout, "io-timeout", "t", o.timeout, "timeout for the server operation; accepts 30s, 10m, 1h")
 	cmd.Long += "\n\n" + authHelp
 }
 
-type utilCloser interface{ Close() }
-
-func (o *utilAuth) open(cmd *cobra.Command) (*anyshare.Client, utilCloser, error) {
+func (o *commandAuth) open(cmd *cobra.Command) (*anyshare.Client, *auth.Session, error) {
 	if err := o.credentials.validate(); err != nil {
 		return nil, nil, usageFailure(cmd, err.Error())
 	}
@@ -69,8 +46,8 @@ func (o *utilAuth) open(cmd *cobra.Command) (*anyshare.Client, utilCloser, error
 	return client, session, nil
 }
 
-func newUtilQuotaCommand() *cobra.Command {
-	var auth utilAuth
+func newQuotaCommand() *cobra.Command {
+	var auth commandAuth
 	var sizes sizeFormat
 	cmd := &cobra.Command{
 		Use:   "quota",
@@ -81,7 +58,7 @@ Available is the sum of writable libraries' remaining capacity. Personal and
 shared custom libraries have independent quotas. The local cache is excluded.
 This is the same total exposed by a default writable mount. Quota and permission
 queries are read-only and do not enumerate file contents.`,
-		Example: "  pkudisk-fuse util quota\n  pkudisk-fuse util quota --account work",
+		Example: "  pkudisk-fuse quota\n  pkudisk-fuse quota --account work",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, closer, err := auth.open(cmd)
@@ -107,8 +84,8 @@ queries are read-only and do not enumerate file contents.`,
 	return cmd
 }
 
-func newUtilSearchCommand() *cobra.Command {
-	var auth utilAuth
+func newSearchCommand() *cobra.Command {
+	var auth commandAuth
 	var scope string
 	var limit int
 	var jsonOutput bool
@@ -117,7 +94,7 @@ func newUtilSearchCommand() *cobra.Command {
 		Use:     "search KEYWORD",
 		Short:   "Search remote filenames",
 		Args:    cobra.ExactArgs(1),
-		Example: "  pkudisk-fuse util search report\n  pkudisk-fuse util search report --in '/Library/Reports' --limit 100\n  pkudisk-fuse util search report --json",
+		Example: "  pkudisk-fuse search report\n  pkudisk-fuse search report --in '/Library/Reports' --limit 100\n  pkudisk-fuse search report --json",
 		Long: `Search file and folder names through AnyShare's server index.
 The default searches all accessible libraries. --in resolves a remote folder
 first and restricts the server query to that folder's descendants. Results are
@@ -179,8 +156,8 @@ are not requested. A search never changes remote files.`,
 	return cmd
 }
 
-func newUtilCopyCommand() *cobra.Command {
-	var auth utilAuth
+func newCopyCommand() *cobra.Command {
+	var auth commandAuth
 	cmd := &cobra.Command{
 		Use:   "copy REMOTE-SOURCE REMOTE-DIRECTORY",
 		Short: "Copy a remote file or folder on the server",
@@ -191,7 +168,7 @@ copies return after the server publishes the new object. Directory copies may
 run asynchronously and are polled until completion. No file bytes pass through
 this client. Existing-name behavior follows the official client's server
 policy; inspect the destination with ls after completion.`,
-		Example: "  pkudisk-fuse util copy '/Library/report.pdf' '/Library/Archive'\n  pkudisk-fuse util copy '/Library/Photos' '/Library/Backup'",
+		Example: "  pkudisk-fuse copy '/Library/report.pdf' '/Library/Archive'\n  pkudisk-fuse copy '/Library/Photos' '/Library/Backup'",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, closer, err := auth.open(cmd)
 			if err != nil {

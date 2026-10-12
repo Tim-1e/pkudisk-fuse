@@ -56,7 +56,7 @@ func TestReadableAndExactSizeModes(t *testing.T) {
 
 func TestShortFlagsAndHelpAreConsistent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	commands := [][]string{{"ls"}, {"upload"}, {"download"}, {"mount"}, {"tui"}, {"recover"}, {"util", "quota"}, {"util", "search"}}
+	commands := [][]string{{"ls"}, {"upload"}, {"download"}, {"mount"}, {"tui"}, {"recover"}, {"quota"}, {"search"}}
 	for _, path := range commands {
 		out, stderr, err := testExecute(append(append([]string{}, path...), "-h")...)
 		if err != nil || stderr != "" || !strings.Contains(out, "Usage:") || !strings.Contains(out, "-b, --bytes") {
@@ -76,9 +76,9 @@ func TestShortFlagsAndHelpAreConsistent(t *testing.T) {
 		{[]string{"upload"}, map[string]string{"a": "account", "b": "bytes", "f": "overwrite", "t": "io-timeout", "u": "username"}},
 		{[]string{"download"}, map[string]string{"f": "overwrite", "t": "io-timeout"}},
 		{[]string{"mount"}, map[string]string{"v": "verbose", "t": "io-timeout", "a": "account", "b": "bytes"}},
-		{[]string{"util", "quota"}, map[string]string{"a": "account", "b": "bytes", "t": "io-timeout"}},
-		{[]string{"util", "search"}, map[string]string{"j": "json", "b": "bytes"}},
-		{[]string{"util", "copy"}, map[string]string{"a": "account", "t": "io-timeout"}},
+		{[]string{"quota"}, map[string]string{"a": "account", "b": "bytes", "t": "io-timeout"}},
+		{[]string{"search"}, map[string]string{"j": "json", "b": "bytes"}},
+		{[]string{"copy"}, map[string]string{"a": "account", "t": "io-timeout"}},
 		{[]string{"account", "add"}, map[string]string{"u": "username"}},
 		{[]string{"account", "ls"}, map[string]string{"j": "json"}},
 		{[]string{"recover"}, map[string]string{"j": "json", "b": "bytes"}},

@@ -22,7 +22,7 @@ import (
 // Opt-in acceptance uses the saved account and only mutates a private temporary
 // fixture. Matched searches require existing index entries; an empty result never
 // counts as successful parser/metadata validation.
-func TestLiveUtilityTransfers(t *testing.T) {
+func TestLiveTransfers(t *testing.T) {
 	if os.Getenv("PKUDISK_TEST_LIVE") != "1" {
 		t.Skip("set PKUDISK_TEST_LIVE=1 to exercise the saved account and temporary remote data")
 	}
@@ -139,7 +139,7 @@ func TestLiveUtilityTransfers(t *testing.T) {
 			return result
 		}
 		// Reproduce the reported command and require real metadata, not zero hits.
-		global := decode(mustRun("util", "search", "test", "--json", "--limit", "25"))
+		global := decode(mustRun("search", "test", "--json", "--limit", "25"))
 		if len(global.Files) == 0 {
 			t.Fatal("matched live search unexpectedly returned no entries")
 		}
@@ -162,20 +162,20 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if searchRoot.ID == "" {
 			t.Fatal("search returned an inaccessible library")
 		}
-		result := decode(mustRun("util", "search", "test", "--in", searchRoot.ID, "--json", "--limit", "100"))
+		result := decode(mustRun("search", "test", "--in", searchRoot.ID, "--json", "--limit", "100"))
 		if len(result.Files) == 0 {
 			t.Fatal("scoped matched search unexpectedly returned no entries")
 		}
 		path := "/" + searchRoot.Name
-		text := mustRun("util", "search", "test", "--in", path, "--limit", "100")
+		text := mustRun("search", "test", "--in", path, "--limit", "100")
 		if !strings.Contains(text, result.Files[0].Name) || strings.Contains(text, "EiB") {
 			t.Fatal("matched text search output is invalid")
 		}
-		limited := decode(mustRun("util", "search", "test", "--in", path, "--json", "--limit", "1"))
+		limited := decode(mustRun("search", "test", "--in", path, "--json", "--limit", "1"))
 		if len(limited.Files) != 1 {
 			t.Fatal("search limit was ignored")
 		}
-		folders := decode(mustRun("util", "search", "e", "--json", "--limit", "100"))
+		folders := decode(mustRun("search", "e", "--json", "--limit", "100"))
 		sawDir := false
 		for _, entry := range folders.Files {
 			if entry.Dir {
@@ -188,7 +188,7 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if !sawDir {
 			t.Fatal("live matched search must exercise at least one indexed folder")
 		}
-		absent := mustRun("util", "search", fixture.Name+"-not-present", "--in", selected.ID, "--json")
+		absent := mustRun("search", fixture.Name+"-not-present", "--in", selected.ID, "--json")
 		if !strings.Contains(absent, `"files":[]`) {
 			t.Fatal("empty JSON result is not an array")
 		}
@@ -247,7 +247,7 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mustRun("util", "copy", remote+"/test.txt", dest.ID)
+		mustRun("copy", remote+"/test.txt", dest.ID)
 		destPath := "/" + library.Name + "/" + fixture.Name + "/copied"
 		out := filepath.Join(local, "server-file")
 		mustRun("download", destPath+"/test.txt", out)
@@ -255,16 +255,16 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if err != nil || !bytes.Equal(got, content["test.txt"]) {
 			t.Fatal("server file copy changed content", err)
 		}
-		if _, _, err := run("util", "copy", remote+"/test.txt", dest.ID); err == nil {
+		if _, _, err := run("copy", remote+"/test.txt", dest.ID); err == nil {
 			t.Fatal("duplicate server copy unexpectedly replaced a file")
 		}
-		mustRun("util", "copy", selected.ID, dest.ID)
+		mustRun("copy", selected.ID, dest.ID)
 		tree := filepath.Join(local, "server-tree")
 		mustRun("download", destPath+"/source", tree)
 		verifyTree(tree)
 		// Same-folder duplication must print the renamed output instead of implying
 		// that it replaced the original.
-		output := mustRun("util", "copy", remote+"/test.txt", selected.ID)
+		output := mustRun("copy", remote+"/test.txt", selected.ID)
 		if strings.HasSuffix(strings.TrimSpace(output), "/test.txt") {
 			t.Fatal("same-folder copy output uses the source's name")
 		}
@@ -275,11 +275,11 @@ func TestLiveUtilityTransfers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		readable := mustRun("util", "quota")
+		readable := mustRun("quota")
 		if !strings.Contains(readable, "GiB") && !strings.Contains(readable, "TiB") {
 			t.Fatal("quota is not readable by default")
 		}
-		text := mustRun("util", "quota", "-b")
+		text := mustRun("quota", "-b")
 		if !strings.Contains(text, fmt.Sprintf("Allocated: %d", quota.Allocated)) {
 			t.Fatal("quota CLI differs from library aggregate")
 		}

@@ -79,8 +79,8 @@ capacity reporting, using writable access from any participating account.
 Cross-account rename is rejected before flushing or temporarily renaming a
 source. Recovery journals record the account/server and original remote IDs.
 
-The optional `util` command group currently exposes three small server-side
-operations:
+The top-level `quota`, `search`, `copy`, `share` and `link` commands use these
+server APIs:
 
 ```text
 POST /api/ecosearch/v1/file-search
@@ -88,7 +88,7 @@ POST /api/ecosearch/v1/file-search
  "rows":25,"range":[],"start":0,"type":"doc"}
 ```
 
-`util search` resolves an optional folder scope first, then requests one bounded
+`search` resolves an optional folder scope first, then requests one bounded
 filename page. It validates returned IDs, names and sizes before printing them. The deployed
 search index returns `created_at`/`modified_at` as integer Unix microseconds;
 RFC3339 strings are also accepted, and null/missing times remain absent. Folder
@@ -119,7 +119,7 @@ counts for empty trees), and success requires `status:"finished"` with `success`
 The final entry uses the destination docid, not the job ID. Same-folder copies
 use `ondup:2` and obtain their server-generated name from metadata.
 
-`util copy` waits for the server to finish and never moves file bytes through
+`copy` waits for the server to finish and never moves file bytes through
 the local machine. Existing-name behavior remains the server's policy. Server
 permissions, approval requirements and storage-service restrictions can reject
 copy even when ordinary upload/download is allowed.
@@ -129,6 +129,89 @@ batch-metadata and instant-upload protocols. They remain documented in the
 read-only discovery report until their mutation/fallback semantics justify a
 small user-facing interface. No offline URL, BitTorrent or magnet task API was
 found in the official client.
+
+## Internal sharing and anonymous links
+
+The official client inspected for sharing is the Linux 7.0.6-3-281 package,
+unpacked under `/tmp` for read-only analysis without installing or running it.
+Internal links are authenticated navigation, independent from ACL grants:
+
+```text
+GET  /api/shared-link/v1/document/{file|folder}/{escaped-full-gns-id}?type=realname
+POST /api/shared-link/v1/document/realname
+{"item":{"id":"gns://LIBRARY/OBJECT","type":"file"}}
+```
+
+An existing link is reused; creation returns `id`. URLs use the configured
+server base followed by `/anyshare/zh-cn/link/ID` with item/type routing fields
+and no authentication token or pickup code added. PKU's root `/link/ID` route
+serves its landing page instead of the netdisk. The
+bundle exposes no internal-link deletion route. Permission listing/removal is
+separate from link creation.
+
+```text
+POST /api/eacp/v1/department/search
+{"key":"NAME","start":0,"limit":50}
+
+GET /api/doc-share/v1/sharing-configuration-scope/user
+POST /api/doc-share/v1/doc-perm
+{"doc_id":"gns://LIBRARY/OBJECT","configs":[{
+ "allow":["display","preview","download"],"deny":[],
+ "accessor":{"id":"USER-ID","type":"user"},
+ "expires_at":"2026-12-01T00:00:00Z"}]}
+```
+
+Recipient search returns `userinfos` (`userid/name/account/deppath`) and
+`depinfos` (`depid/name/path`). Explicit `userid/depid` identifies recipients;
+campus login numbers need not match AnyShare directory accounts. `user` and
+`department` are accessor type strings. `validity_period` and `perm` from the
+policy define defaults and allowed settings. Epoch zero represents no expiry.
+HTTP 202 means approval pending and must not be presented as active access.
+
+```text
+POST /api/eacp/v1/perm2/get {"docid":"gns://LIBRARY/OBJECT"}
+POST /api/eacp/v1/perm2/set
+{"docid":"gns://LIBRARY/OBJECT","inherit":true,"perminfos":[...]}
+```
+
+ACL entries identify `accessorid/accessortype`, named `allow/deny`, `endtime`
+(Unix microseconds; `-1` is permanent), `inheritdocid/inheritpath`, and optional
+read policies. Removal retains every unrelated/inherited entry as raw JSON and
+the original inheritance flag. The official protocol replaces the snapshot;
+no server revision, ETag or conditional update was found. Avoid concurrent
+ACL edits by other clients. HTTP 200 with `result:1` also means pending approval;
+`result:0` means effective. Selected recipients without direct rules cause no
+mutation. Removing direct denies can still leave inherited permissions.
+
+External links use these independent APIs:
+
+```text
+GET /api/doc-share/v1/sharing-configuration-scope/anyone
+POST /api/shared-link/v1/document/anonymous
+{"item":{"id":"gns://LIBRARY/OBJECT","type":"file",
+         "allow":["display","preview","download"]},
+ "title":"report.pdf","expires_at":"2026-12-01T00:00:00Z",
+ "password":"PICKUP-CODE","verify_mobile":false,"limited_times":-1}
+
+GET /api/shared-link/v1/document/{file|folder}/{escaped-full-gns-id}?type=anonymous&offset=0&limit=20
+DELETE /api/shared-link/v1/document/anonymous/LINK-ID
+```
+
+Listings return arrays containing `id/title/item.allow/expires_at/password/
+limited_times/verify_mobile`. The CLI fetches all pages. Epoch-zero expiry and
+`limited_times:-1` mean unlimited. Optional settings default to policy;
+`must_set_password`, allowed permissions, validity/visit maxima and forced phone
+verification are enforced before creation. Folder upload links use
+`display/create/modify`; file upload permissions are rejected. The result is a
+purpose-built share URL, not an object-storage signed URL.
+
+The client never invokes `/doc-center/v2/share-doc-message` or sends mail.
+Acceptance on two saved PKU accounts created only temporary personal-library
+files, verified recipient downloads and subsequent loss of access, retained an
+unrelated direct rule, and created/revoked pickup-code file and folder links.
+CLI and TUI reuse these APIs. Anonymous link metadata can briefly be cached by
+the service after deletion; the client uses the official revoke operation and
+does not add network retries or delay workarounds.
 
 ## Directory transfers and archives
 

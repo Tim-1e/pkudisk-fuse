@@ -32,7 +32,7 @@ func TestAllAccountsFlagScopeAndConflicts(t *testing.T) {
 	for _, args := range [][]string{
 		{"ls", "--all-accounts"}, {"tui", "--all-accounts"},
 		{"upload", "local", "remote", "--all-accounts"}, {"download", "remote", "--all-accounts"},
-		{"account", "ls", "--all-accounts"}, {"util", "quota", "--all-accounts"},
+		{"account", "ls", "--all-accounts"}, {"quota", "--all-accounts"},
 	} {
 		if _, _, err := testExecute(args...); exitCode(err) != 2 {
 			t.Fatal("multi-account flag leaked into another command", args, err)

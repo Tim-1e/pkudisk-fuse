@@ -17,7 +17,7 @@ import (
 // Exercise command parsing, saved-session restore, API responses and stdout /
 // stderr together. The response schema comes from matched PKU searches, including
 // integer microsecond timestamps and folder size=-1, rather than an empty page.
-func TestUtilCommandsThroughHTTP(t *testing.T) {
+func TestOperationCommandsThroughHTTP(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const lib = "gns://00000000000000000000000000000001"
 	var refreshes, copies atomic.Int32
@@ -114,18 +114,18 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 		}
 	})
 	t.Run("quota", func(t *testing.T) {
-		if out := run("util", "quota"); !strings.Contains(out, "Available: 127 B") {
+		if out := run("quota"); !strings.Contains(out, "Available: 127 B") {
 			t.Fatal(out)
 		}
-		short := run("util", "quota", "-b", "-a", "fixture", "-t", "30s")
-		long := run("util", "quota", "--bytes", "--account", "fixture", "--io-timeout", "30s")
+		short := run("quota", "-b", "-a", "fixture", "-t", "30s")
+		long := run("quota", "--bytes", "--account", "fixture", "--io-timeout", "30s")
 		if short != long || !strings.Contains(short, "Available: 127\n") || strings.Contains(short, "127 B") {
 			t.Fatal(short, long)
 		}
 	})
 	for _, scope := range []string{"", "/Library/Reports", lib + "/reports"} {
 		t.Run("matched-"+scope, func(t *testing.T) {
-			args := []string{"util", "search", "test", "--limit", "2"}
+			args := []string{"search", "test", "--limit", "2"}
 			if scope != "" {
 				args = append(args, "--in", scope)
 			}
@@ -152,17 +152,17 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 		})
 	}
 	t.Run("exact-search-json", func(t *testing.T) {
-		text := run("util", "search", "test", "-b", "-a", "fixture")
+		text := run("search", "test", "-b", "-a", "fixture")
 		if !strings.Contains(text, "212") || strings.Contains(text, "212 B") {
 			t.Fatal(text)
 		}
-		if short, long := run("util", "search", "test", "-bj", "-a", "fixture"), run("util", "search", "test", "--json"); short != long {
+		if short, long := run("search", "test", "-bj", "-a", "fixture"), run("search", "test", "--json"); short != long {
 			t.Fatal("JSON changed with -b/-j")
 		}
 	})
 	t.Run("empty-json", func(t *testing.T) {
 		var response map[string]any
-		if err := json.Unmarshal([]byte(run("util", "search", "no-match", "--json")), &response); err != nil {
+		if err := json.Unmarshal([]byte(run("search", "no-match", "--json")), &response); err != nil {
 			t.Fatal(err)
 		}
 		if rows, ok := response["files"].([]any); !ok || len(rows) != 0 {
@@ -170,7 +170,7 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 		}
 	})
 	t.Run("copy", func(t *testing.T) {
-		out := run("util", "copy", "/Library/test.txt", "/Library/Backup")
+		out := run("copy", "/Library/test.txt", "/Library/Backup")
 		if !strings.Contains(out, "Copied") || copies.Load() != 1 {
 			t.Fatal(out)
 		}

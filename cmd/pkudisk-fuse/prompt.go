@@ -49,14 +49,9 @@ func (p *credentialPrompt) View() tea.View { return tea.NewView(p.input.View()) 
 func ttyInput(ctx context.Context, label string, hidden bool) ([]byte, error) {
 	input, output, err := openTerminal()
 	if err != nil {
-		return nil, errors.New("interactive terminal unavailable; provide --username and --password-file")
+		return nil, errors.New("interactive terminal unavailable; supply the required command arguments or credential flags")
 	}
-	if input != os.Stdin {
-		defer input.Close()
-	}
-	if output != input && output != os.Stdout && output != os.Stderr {
-		defer output.Close()
-	}
+	defer closeTerminal(input, output)
 	prompt := newCredentialPrompt(label, hidden)
 	_, err = tea.NewProgram(prompt, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output)).Run()
 	if ctx.Err() != nil {
@@ -75,4 +70,13 @@ func ttyInput(ctx context.Context, label string, hidden bool) ([]byte, error) {
 	result := []byte(value)
 	prompt.input.Reset()
 	return result, nil
+}
+
+func closeTerminal(input, output *os.File) {
+	if input != os.Stdin {
+		input.Close()
+	}
+	if output != input && output != os.Stdout && output != os.Stderr {
+		output.Close()
+	}
 }

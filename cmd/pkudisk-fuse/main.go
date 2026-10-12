@@ -86,7 +86,7 @@ const authHelp = `Account selection:
   Uses the saved default account. --account NAME selects another saved account.
   Explicit credentials start a new login. Successful logins are saved unless
   --no-save is set; the first saved account becomes the default.
-  --non-interactive fails instead of prompting for credentials or verification.
+  --non-interactive disables prompts; supply all required inputs explicitly.
   Run "pkudisk-fuse account add --help" for credential-file formats.
 
 Output:
@@ -103,9 +103,9 @@ func newRootCommand(in io.Reader, out, errOut io.Writer) *cobra.Command {
 
 Start with "account add" to save a PKU campus login, then "ls" to list
 accessible document libraries. "ls PATH" lists remote folders; "tui" opens a file
-browser. "util quota", "util search" and "util copy" use small server-side
-operations without mounting. "recover" inspects local writes retained after an
-interrupted mount.
+browser. "search" finds remote filenames; "copy" duplicates remote files or
+folders. "share" manages internal access, "link" manages anonymous links, and
+"quota" reports capacity. "recover" inspects writes retained after a mount.
 
 Run "pkudisk-fuse help COMMAND" or "COMMAND --help" for usage and examples.
 Flags may appear before or after arguments. Use -- before a file name that
@@ -119,8 +119,16 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 	root.SetErr(errOut)
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err, cmd.CommandPath()} })
 	root.CompletionOptions.DisableDefaultCmd = true
+	root.AddGroup(
+		&cobra.Group{ID: "browse", Title: "Browse and find:"},
+		&cobra.Group{ID: "files", Title: "Transfer and manage files:"},
+		&cobra.Group{ID: "sharing", Title: "Sharing:"},
+		&cobra.Group{ID: "local", Title: "Mount and recover:"},
+		&cobra.Group{ID: "account", Title: "Accounts and capacity:"},
+		&cobra.Group{ID: "tools", Title: "CLI tools:"},
+	)
 	root.SetHelpCommand(&cobra.Command{
-		Use: "help [COMMAND...]", Short: "Explain a command, its arguments, and examples",
+		Use: "help [COMMAND...]", Short: "Explain a command, its arguments, and examples", GroupID: "tools",
 		Long:    "Show help without opening credentials or connecting to PKU NetDisk.\nSpecify nested commands, such as 'help account add'.",
 		Example: "  pkudisk-fuse help recover\n  pkudisk-fuse help account add",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -135,13 +143,21 @@ starts with a dash. Exit codes: 0 success, 1 execution failure, 2 usage error.`,
 			return target.Help()
 		},
 	})
-	root.AddCommand(newAccountCommand(), newRecoverCommand(), newCompletionCommand(), newUtilCommand())
-	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
+	add := func(group string, commands ...*cobra.Command) {
+		for _, command := range commands {
+			command.GroupID = group
+		}
+		root.AddCommand(commands...)
+	}
+	add("browse", newRemoteCommand("ls"), newSearchCommand(), newRemoteCommand("tui"))
+	add("files", newRemoteCommand("upload"), newRemoteCommand("download"), newCopyCommand(), newRemoteCommand("extract"))
+	add("sharing", newShareCommand(), newLinkCommand())
+	add("local", newRemoteCommand("mount"), newRecoverCommand())
+	add("account", newAccountCommand(), newQuotaCommand())
+	add("tools", newCompletionCommand())
+	add("tools", &cobra.Command{Use: "version", Short: "Print the installed version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) {
 		fmt.Fprintln(cmd.OutOrStdout(), "pkudisk-fuse", installedVersion())
 	}})
-	for _, name := range []string{"ls", "upload", "download", "extract", "mount", "tui"} {
-		root.AddCommand(newRemoteCommand(name))
-	}
 	return root
 }
 
@@ -243,7 +259,7 @@ continue because the official protocol exposes no job cancellation endpoint.
 		cmd.Example = "  pkudisk-fuse extract '/My library/photos.zip' '/My library/'\n  pkudisk-fuse extract '/My library/photos.zip' '/My library/Photos-new'"
 	case "tui":
 		cmd.Short = "Open an interactive remote file browser"
-		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads files/folders, d downloads files/folders, a saves a folder ZIP,\nv transfers a folder via ZIP, x extracts a remote archive, r refreshes,\n? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
+		cmd.Long = "Browse remote libraries with a searchable list and use a local file picker\nfor uploads. Downloads use an editable destination. Transfers show progress\nand can be cancelled; a terminal is required.\n\nKeys: arrows/j/k move, Enter opens, Backspace returns to the parent, / filters,\nu uploads files/folders, d downloads files/folders, a saves a folder ZIP,\nv transfers a folder via ZIP, x extracts a remote archive, r refreshes,\ns opens sharing (internal links, recipients, external links and revocation),\n? shows help, Esc cancels, q quits.\nThe screen shows the selected account and remote path."
 		cmd.Example = "  pkudisk-fuse tui\n  pkudisk-fuse tui --account work --io-timeout 30m"
 	case "mount":
 		cmd.Use = "mount MOUNTPOINT"

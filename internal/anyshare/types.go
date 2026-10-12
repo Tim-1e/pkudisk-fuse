@@ -113,7 +113,7 @@ func responseError(status int, data []byte) error {
 		kind = ErrConflict
 	case v.Code == 403002001 || v.Code == 403002002 || v.Code == 403002182:
 		kind = ErrExists
-	case status == 404 || v.Code == 404002005 || v.Code == 404002006:
+	case status == 404 || v.Code == 404002005 || v.Code == 404002006 || v.Code == 400007001:
 		kind = ErrNotFound
 	case status == 401 || status == 403:
 		kind = ErrPermission

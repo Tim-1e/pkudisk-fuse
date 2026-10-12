@@ -27,7 +27,7 @@ func TestHelpIsOfflineAndConsistent(t *testing.T) {
 	path := filepath.Join(directory, "pkudisk-fuse")
 	os.Mkdir(path, 0700)
 	os.WriteFile(filepath.Join(path, "accounts.json"), []byte("not JSON"), 0600)
-	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"extract"}, {"recover"}, {"tui"}, {"util"}, {"util", "quota"}, {"util", "search"}, {"util", "copy"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
+	paths := [][]string{{"mount"}, {"ls"}, {"upload"}, {"download"}, {"extract"}, {"recover"}, {"tui"}, {"quota"}, {"search"}, {"copy"}, {"share"}, {"share", "add"}, {"share", "ls"}, {"share", "link"}, {"share", "search"}, {"share", "remove"}, {"link"}, {"link", "add"}, {"link", "ls"}, {"link", "remove"}, {"account"}, {"account", "add"}, {"account", "ls"}, {"account", "default"}, {"account", "remove"}, {"version"}, {"completion"}}
 	for _, path := range paths {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			direct, stderr, err := testExecute(append(append([]string{}, path...), "--help")...)
@@ -94,6 +94,8 @@ func TestAccountLsSummaries(t *testing.T) {
 func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
+		{"util"}, {"util", "--help"}, {"help", "util"}, {"util", "quota"}, {"util", "search", "test"}, {"util", "copy", "source", "destination"},
+		{"util", "share", "ls", "path"}, {"util", "link", "ls", "path"},
 		{"accounts"}, {"roots"}, {"root"}, {"root", "--help"}, {"help", "root"}, {"account", "use", "unused"}, {"account", "delete", "unused"},
 		{"help", "missing"}, {"help", "--json"}, {"recover", "ignored"}, {"root", "ignored"},
 		{"list"}, {"account", "list"}, {"account", "list", "--help"}, {"help", "account", "list"}, {"account", "--json"},
@@ -118,6 +120,39 @@ func TestUsageFailuresBeforeAuthentication(t *testing.T) {
 				t.Fatalf("exit=%d out=%q err=%v", exitCode(err), out, err)
 			}
 		})
+	}
+}
+
+func TestCommandDistributionAndCompletionHaveNoAliases(t *testing.T) {
+	root := newRootCommand(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	root.InitDefaultHelpCmd()
+	want := map[string]string{
+		"ls": "browse", "search": "browse", "tui": "browse",
+		"upload": "files", "download": "files", "copy": "files", "extract": "files",
+		"share": "sharing", "link": "sharing", "mount": "local", "recover": "local",
+		"account": "account", "quota": "account", "completion": "tools", "help": "tools", "version": "tools",
+	}
+	if len(root.Commands()) != len(want) {
+		t.Fatal("unexpected top-level command count", len(root.Commands()))
+	}
+	for _, command := range root.Commands() {
+		if command.GroupID != want[command.Name()] || len(command.Aliases) > 0 {
+			t.Fatal("command is misplaced or aliased", command.Name(), command.GroupID)
+		}
+		for _, subcommand := range command.Commands() {
+			if len(subcommand.Aliases) > 0 || subcommand.Name() == "list" {
+				t.Fatal("nested command has an alias or list spelling", subcommand.Name())
+			}
+		}
+	}
+	out, stderr, err := testExecute("__complete", "")
+	if err != nil || strings.Contains(stderr, "Using account") || strings.Contains(out, "util\t") {
+		t.Fatal("removed group remains in completion", out, stderr, err)
+	}
+	for _, name := range []string{"quota", "search", "copy", "share", "link"} {
+		if !strings.Contains(out, name+"\t") {
+			t.Fatal("top-level completion omits command", name)
+		}
 	}
 }
 func TestNonInteractiveCredentialsNeverPrompt(t *testing.T) {

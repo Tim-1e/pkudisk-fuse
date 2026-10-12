@@ -35,7 +35,7 @@ func (f *authFlags) addCredentials(set *pflag.FlagSet) {
 	set.StringVar(&f.passwordFile, "password-file", "", "read password from an owner-only file")
 	set.StringVar(&f.credentialsFile, "credentials-file", "", "read campus username/password from an owner-only JSON file")
 	set.BoolVar(&f.stdin, "password-stdin", false, "read password from standard input")
-	set.BoolVar(&f.nonInteractive, "non-interactive", false, "fail instead of prompting for credentials or verification")
+	set.BoolVar(&f.nonInteractive, "non-interactive", false, "fail instead of prompting for credentials, verification or required command inputs")
 }
 
 func (f *authFlags) add(set *pflag.FlagSet) {

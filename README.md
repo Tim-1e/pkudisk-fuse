@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.9` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.4.0` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -69,13 +69,18 @@ Common short flags are `-a/--account`, `-j/--json`, `-f/--overwrite`,
 `-v/--verbose`, `-t/--io-timeout` and `-u/--username`, wherever the corresponding
 long flag is available. `-h/--help` remains help on every command.
 
+Commands are top-level and help groups them by purpose. In v0.4.0, `quota`,
+`search` and `copy` replace `util quota/search/copy`; the `util` group and its
+old forms are removed. `share` manages internal access, and `link` manages
+external links. Commands and listing verbs have no aliases.
+
 `--account/-a` selects one saved account by its exact name. Mount multiple
 accounts with `mount --all-accounts`; the wildcard `*` has no special meaning.
 
 ```sh
 bin/pkudisk-fuse ls -a work
 bin/pkudisk-fuse ls -b -a work
-bin/pkudisk-fuse util quota -b -a work
+bin/pkudisk-fuse quota -b -a work
 bin/pkudisk-fuse download '/My library/report.pdf' ./report.pdf -f -t 30m
 ```
 
@@ -157,9 +162,9 @@ bin/pkudisk-fuse download '/My library/Photos' ~/Downloads/
 bin/pkudisk-fuse download '/My library/Photos' ./photos.zip --archive
 bin/pkudisk-fuse download '/My library/Photos' ./photos --via-archive
 bin/pkudisk-fuse extract '/My library/photos.zip' '/My library/Photos-new'
-bin/pkudisk-fuse util quota
-bin/pkudisk-fuse util search report --in '/My library/Reports'
-bin/pkudisk-fuse util copy '/My library/report.pdf' '/My library/Archive'
+bin/pkudisk-fuse quota
+bin/pkudisk-fuse search report --in '/My library/Reports'
+bin/pkudisk-fuse copy '/My library/report.pdf' '/My library/Archive'
 ```
 
 Directories transfer recursively, preserving nested and empty folders. A remote folder destination uses the local basename; a local directory destination uses the remote basename. A new destination path can rename the result, and its parent must already exist. Omitting a download destination saves the remote name in the current directory, including for a `gns://` selector. Uploads reject symlinks and special files.
@@ -188,10 +193,10 @@ The selected root is checked against the libraries returned for the authenticate
 
 ## Server utilities and mounted free space
 
-`util quota` sums the accessible document libraries. Writable libraries contribute
+`quota` sums the accessible document libraries. Writable libraries contribute
 their allocation and usage; read-only libraries contribute their used bytes to
-both totals. Available is the sum of writable libraries' remaining capacity. `util search` performs a bounded server-side
-filename search, and `util copy` duplicates a file or folder within NetDisk
+both totals. Available is the sum of writable libraries' remaining capacity. `search` performs a bounded server-side
+filename search, and `copy` duplicates a file or folder within NetDisk
 without downloading its bytes through this program. These operations use the
 selected account and never accept arbitrary URL or BitTorrent sources.
 
@@ -201,6 +206,58 @@ selected folder. `--read-only` reports zero available capacity and counts each
 library as used/used. The local cache volume is not remote capacity. Quota queries
 are shared and cached for five seconds, then invalidated after mount mutations.
 A quota or permission failure returns an error instead of stale writable space.
+
+## Internal sharing and external links
+
+```sh
+# An internal navigation link requires login and existing file permissions.
+bin/pkudisk-fuse share link '/My library/report.pdf'
+
+# Find the recipient's AnyShare ID, then grant access explicitly.
+bin/pkudisk-fuse share search 'Recipient name'
+bin/pkudisk-fuse share add '/My library/report.pdf' \
+  --user USER-ID --permission preview,download --expires-in 168h
+bin/pkudisk-fuse share ls '/My library/report.pdf'
+bin/pkudisk-fuse share remove '/My library/report.pdf' --user USER-ID
+
+# External links work without an AnyShare account.
+bin/pkudisk-fuse link add '/My library/report.pdf' \
+  --code Abcd1234 --expires-in 168h
+bin/pkudisk-fuse link ls '/My library/report.pdf'
+bin/pkudisk-fuse link remove LINK-ID
+```
+
+`share add/remove` accepts repeated or comma-separated `--user` and
+`--department` IDs. Recipient names and campus login numbers are not IDs; the
+directory search shows names, accounts, departments and explicit IDs. Internal
+links are reused and grant no permission on their own. Removal affects only
+selected direct rules, preserving unrelated recipients and inherited access.
+No API to delete an internal navigation link was found; remove its access rules
+instead. The official revoke API replaces the full ACL snapshot and has no
+conditional update, so avoid concurrent permission edits from another client.
+
+External links support `--permission`, `--expires-in`, `--code`, `--title`,
+`--limit` for visits and `--verify-mobile`. Omitted optional settings use server
+defaults. `--expires-in 0` requests no expiry; `--limit -1` requests unlimited
+visits, subject to policy. Upload links require a folder and
+`--permission create,modify`. Text/JSON results include the URL and effective
+settings; `link ls` fetches all pages and shows pickup codes. Pending server
+approvals are reported explicitly, not as active links or permissions. None of
+these operations sends email or recipient notifications.
+
+In a terminal, missing paths are prompted; `share add` without recipient flags
+searches and offers an explicit selection, and `share remove` offers current
+direct recipients. A server-required missing pickup code is prompted too.
+Commands with all required input execute directly. Use `--non-interactive` for
+scripts; non-terminal invocations always fail on missing input. There is no
+separate `--interactive` flag. `-a/--account`, `-t/--io-timeout` and `-j/--json`
+apply where shown in help. Account announcements go to stderr.
+
+In the TUI, select a file/folder and press `s`. The sharing menu provides
+internal links, recipient search/grants, direct/inherited permission inspection
+and revocation, external link creation/listing and revocation. Mutations show a
+review screen before applying; Esc cancels. Link results have a scrollable URL
+and `c` requests clipboard copying through the terminal's OSC52 support.
 
 ## Long-lived mounts
 
@@ -221,7 +278,7 @@ For live CLI transfer and utility acceptance with a saved account:
 
 ```sh
 PKUDISK_TEST_LIVE=1 go test -count=1 -timeout=7m \
-  -run '^TestLiveUtilityTransfers$' -v ./cmd/pkudisk-fuse
+  -run '^TestLiveTransfers$' -v ./cmd/pkudisk-fuse
 ```
 
 `PKUDISK_TEST_ACCOUNT` selects a saved account. `PKUDISK_TEST_BINARY` optionally
@@ -231,6 +288,20 @@ hashes, and requires already indexed file and folder search matches. Indexing
 new uploads is asynchronous, so existing metadata supplies the matched-search
 checks. The regular CI suite exercises these response shapes without credentials
 and tests single-Enter prompt submission in a private Windows console.
+
+Sharing has its own opt-in acceptance with two saved accounts on the same
+server:
+
+```sh
+PKUDISK_TEST_LIVE_SHARING=1 go test -count=1 -timeout=4m \
+  -run '^TestLiveSharing$' -v ./cmd/pkudisk-fuse
+```
+
+It shares only a new personal-library fixture with the second saved account,
+verifies that recipient can download, revokes access, tests external file/folder
+links and removes the fixture. It sends no notifications. The regular suite
+also covers populated ACLs, preservation of unrelated/inherited rules,
+approval responses, link pagination, scripts, help and TUI review/cancellation.
 
 ## Mount multiple accounts
 
