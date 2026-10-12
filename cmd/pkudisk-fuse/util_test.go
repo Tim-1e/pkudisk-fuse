@@ -102,7 +102,7 @@ func TestUtilCommandsThroughHTTP(t *testing.T) {
 	}
 	t.Run("library-listing", func(t *testing.T) {
 		text := run("ls")
-		if !strings.Contains(text, "USED / QUOTA") || !strings.Contains(text, "36.5%") || !strings.Contains(text, "RW") {
+		if !strings.Contains(text, "USED") || !strings.Contains(text, "36.5%") || !strings.Contains(text, "RW") {
 			t.Fatal(text)
 		}
 		var entries []struct {

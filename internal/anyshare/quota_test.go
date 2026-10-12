@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 func TestStorageQuotaSumsWritableAndReadOnlyLibraries(t *testing.T) {
 	quotas := map[string]Quota{"gns://custom": {Allocated: 12 << 40, Used: 2 << 40}, "gns://public": {Allocated: 200 << 30, Used: 3 << 30}, "gns://user": {Allocated: 200 << 30, Used: 70 << 30}}
+	var publicAllocated atomic.Int64
+	publicAllocated.Store(quotas["gns://public"].Allocated)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/efast/v1/entry-doc-lib":
@@ -21,7 +24,11 @@ func TestStorageQuotaSumsWritableAndReadOnlyLibraries(t *testing.T) {
 				t.Error("library quota must use GET")
 			}
 			id := strings.TrimPrefix(r.URL.Path, "/api/efast/v1/quota/doc-lib/")
-			json.NewEncoder(w).Encode(quotas[id])
+			quota := quotas[id]
+			if id == "gns://public" {
+				quota.Allocated = publicAllocated.Load()
+			}
+			json.NewEncoder(w).Encode(quota)
 		case r.URL.Path == "/api/eacp/v1/perm1/checkall":
 			var body struct {
 				ID string `json:"docid"`
@@ -47,6 +54,10 @@ func TestStorageQuotaSumsWritableAndReadOnlyLibraries(t *testing.T) {
 	want := Quota{Allocated: (12 << 40) + (200 << 30) + (3 << 30), Used: (2 << 40) + (70 << 30) + (3 << 30)}
 	if quota != want || quota.Available() != (10<<40)+(130<<30) {
 		t.Fatal("wrong aggregate quota", quota)
+	}
+	publicAllocated.Store(1 << 60)
+	if after, err := c.Quota(context.Background()); err != nil || after != quota {
+		t.Fatal("read-only quota changed mounted capacity", after, err)
 	}
 	for _, test := range []struct {
 		root string

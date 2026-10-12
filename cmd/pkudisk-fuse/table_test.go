@@ -83,7 +83,7 @@ func TestLibraryListingDisplaysUsageAndAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
-	if !strings.Contains(text, "USED / QUOTA") || !strings.Contains(text, "12 GiB / 2.0 TiB (0.6%)") || !strings.Contains(text, "1.0 GiB / 200 GiB (0.5%)") || !strings.Contains(text, "RW") || !strings.Contains(text, "RO") || !strings.Contains(text, "unavailable") || strings.Contains(text, "-1") {
+	if !strings.Contains(text, "USED") || !strings.Contains(text, "12 GiB / 2.0 TiB (0.6%)") || !strings.Contains(text, "1.0 GiB") || strings.Contains(text, "200 GiB") || strings.Contains(text, "(0.5%)") || !strings.Contains(text, "RW") || !strings.Contains(text, "RO") || !strings.Contains(text, "unavailable") || strings.Contains(text, "-1") {
 		t.Fatal(text)
 	}
 	if !strings.Contains(status.String(), "quota unavailable") {

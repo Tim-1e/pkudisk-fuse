@@ -158,7 +158,8 @@ func newRemoteCommand(name string) *cobra.Command {
 		cmd.Short = "List a remote directory or the accessible libraries"
 		cmd.Long = `List files and folders in a remote directory. Omit the path, or use /,
 to list accessible document libraries. Library rows show name, type,
-human-readable used/quota and percentage, RW/RO access, and gns:// ID.
+human-readable USED, RW/RO access, and gns:// ID. Writable library usage
+includes quota and percentage; read-only libraries show only used space.
 Inside a library, files show sizes in bytes; subfolders show - for size.
 Use --json for an array of entries with the original remote metadata.
 A file path is rejected; use download to retrieve its contents.

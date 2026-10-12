@@ -21,15 +21,6 @@ func printLibraries(ctx context.Context, client libraryStats, entries []anyshare
 			return err
 		}
 		storage, access := "unavailable", "?"
-		quota, err := client.LibraryQuota(ctx, entry.ID)
-		if err != nil {
-			fmt.Fprintf(status, "Library %q usage: %v\n", tuiText(entry.Name), err)
-		} else {
-			storage = fmt.Sprintf("%s / %s", humanize.IBytes(uint64(quota.Used)), humanize.IBytes(uint64(quota.Allocated)))
-			if quota.Allocated > 0 {
-				storage += fmt.Sprintf(" (%.1f%%)", 100*float64(quota.Used)/float64(quota.Allocated))
-			}
-		}
 		writable, err := client.Writable(ctx, entry.ID)
 		if err != nil {
 			fmt.Fprintf(status, "Library %q permissions: %v\n", tuiText(entry.Name), err)
@@ -38,10 +29,22 @@ func printLibraries(ctx context.Context, client libraryStats, entries []anyshare
 		} else {
 			access = "RO"
 		}
+		quota, err := client.LibraryQuota(ctx, entry.ID)
+		if err != nil {
+			fmt.Fprintf(status, "Library %q usage: %v\n", tuiText(entry.Name), err)
+		} else {
+			storage = humanize.IBytes(uint64(quota.Used))
+			if access == "RW" {
+				storage += " / " + humanize.IBytes(uint64(quota.Allocated))
+				if quota.Allocated > 0 {
+					storage += fmt.Sprintf(" (%.1f%%)", 100*float64(quota.Used)/float64(quota.Allocated))
+				}
+			}
+		}
 		rows = append(rows, []string{entry.Name, entry.Type, storage, access, entry.ID})
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return printTable(output, []string{"NAME", "TYPE", "USED / QUOTA", "ACCESS", "ID"}, rows, 2)
+	return printTable(output, []string{"NAME", "TYPE", "USED", "ACCESS", "ID"}, rows, 2)
 }

@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.6` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.7` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -113,8 +113,9 @@ bin/pkudisk-fuse ls --username YOUR-CAMPUS-ID --password-file ~/.config/pkudisk-
 bin/pkudisk-fuse ls '/My library/Reports'
 ```
 
-Library listings show human-readable used/quota with a usage percentage and
-`RW`/`RO` access. Usage or permission failures are marked unavailable/unknown,
+Library listings show human-readable `USED` and `RW`/`RO` access. Writable
+libraries include quota and usage percentage; read-only libraries show only
+used space. Usage or permission failures are marked unavailable/unknown,
 with details on stderr, so other libraries remain visible. Inside a library,
 regular files keep their byte sizes and folders display `-`. `ls --json` keeps
 the original entry schema, including the remote directory size sentinel `-1`.
