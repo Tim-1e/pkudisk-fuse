@@ -88,6 +88,8 @@ func winError(err error) int {
 		return -fuse.ENOSPC
 	case errors.Is(err, anyshare.ErrSizeLimit), errors.Is(err, syscall.EFBIG):
 		return -fuse.EFBIG
+	case errors.Is(err, syscall.EXDEV):
+		return -fuse.EXDEV
 	case errors.Is(err, context.Canceled):
 		return -fuse.EINTR
 	case errors.Is(err, context.DeadlineExceeded):
@@ -610,7 +612,7 @@ func (w *WinFsp) Rename(oldPath, newPath string) (result int) {
 		return 0
 	}
 	oldParentEntry, newParentEntry := oldParent.snapshot(), newParent.snapshot()
-	if anyshare.LibraryID(oldParentEntry.ID) != anyshare.LibraryID(newParentEntry.ID) {
+	if libraryID(oldParentEntry.ID) != libraryID(newParentEntry.ID) {
 		return -fuse.EXDEV
 	}
 	source, err := w.resolve(ctx, oldPath)
@@ -822,6 +824,9 @@ func (w *WinFsp) Chmod(value string, mode uint32) (result int) {
 	if err != nil {
 		return winError(err)
 	}
+	if node.synthetic {
+		return -fuse.EPERM
+	}
 	node.mu.Lock()
 	node.mode = mode & 0777
 	node.mu.Unlock()
@@ -844,6 +849,9 @@ func (w *WinFsp) Utimens(value string, times []fuse.Timespec) (result int) {
 	node, err := w.resolve(ctx, value)
 	if err != nil {
 		return winError(err)
+	}
+	if node.synthetic {
+		return -fuse.EPERM
 	}
 	node.mu.Lock()
 	defer node.mu.Unlock()

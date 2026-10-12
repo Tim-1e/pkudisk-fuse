@@ -10,8 +10,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
-	"github.com/thezzisu/pkudisk-fuse/internal/auth"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 	"github.com/winfsp/cgofuse/fuse"
@@ -83,26 +81,12 @@ func windowsMountpoint(value string) (string, error) {
 	return point, nil
 }
 
-func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth.Session, opts mountOptions, output io.Writer) (result error) {
+func mountFileSystem(ctx context.Context, source *mountSource, opts mountOptions, output io.Writer) (result error) {
 	point, err := windowsMountpoint(localfile.ExpandPath(opts.mountpoint))
 	if err != nil {
 		return err
 	}
-	client.PartSize = opts.partSize
-	var selected *anyshare.Entry
-	if opts.root != "" && opts.root != "/" {
-		entry, err := client.Resolve(ctx, opts.root)
-		if err != nil {
-			return fmt.Errorf("select mount root: %w", err)
-		}
-		if !entry.Dir {
-			return errors.New("mount root must be a remote directory")
-		}
-		selected = &entry
-	} else if _, err := client.Roots(ctx); err != nil {
-		return err
-	}
-	core, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, Read: &opts.read, TTL: opts.ttl, IOTimeout: opts.timeout, Trace: opts.trace})
+	core, err := vfs.New(source.backend, vfs.Options{Root: source.root, ReadOnly: opts.readOnly, CacheDir: localfile.ExpandPath(opts.cache), CacheLimit: opts.cacheLimit, Read: &opts.read, TTL: opts.ttl, IOTimeout: opts.timeout, Trace: opts.trace})
 	if err != nil {
 		return err
 	}
@@ -142,22 +126,8 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	case <-adapter.Ready:
 	}
 	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; cache %s. Ctrl-C unmounts.\n", point, core.CachePath())
-	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
-	maintenanceDone := make(chan struct{})
-	maintenanceFailed := make(chan error, 1)
-	go func() {
-		defer close(maintenanceDone)
-		session.KeepAlive(maintenanceCtx, opts.refreshInterval, func(err error) {
-			if err == nil {
-				fmt.Fprintln(output, "Authentication session renewed.")
-			} else if errors.Is(err, auth.ErrSessionExpired) {
-				maintenanceFailed <- err
-			} else {
-				fmt.Fprintf(output, "Session renewal will retry: %v\n", err)
-			}
-		})
-	}()
-	defer func() { cancelMaintenance(); <-maintenanceDone }()
+	maintenanceFailed, stopMaintenance := source.maintain(ctx, opts.refreshInterval, output)
+	defer stopMaintenance()
 	select {
 	case err := <-done:
 		return err

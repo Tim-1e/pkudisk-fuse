@@ -256,7 +256,7 @@ func (n *Node) Rename(ctx context.Context, name string, newParent fs.InodeEmbedd
 	if oldParent.ID == newParentEntry.ID && name == newName {
 		return 0
 	}
-	if anyshare.LibraryID(oldParent.ID) != anyshare.LibraryID(newParentEntry.ID) {
+	if libraryID(oldParent.ID) != libraryID(newParentEntry.ID) {
 		return syscall.EXDEV
 	}
 	source, err := n.find(ctx, name)

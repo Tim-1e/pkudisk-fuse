@@ -172,6 +172,9 @@ func (f *FileSystem) Root() *Node       { return f.root }
 func (f *FileSystem) CachePath() string { return f.cacheDir }
 func (f *FileSystem) makeNode(e anyshare.Entry) *Node {
 	n := &Node{f: f, entry: e, statAt: time.Now(), traceName: e.Name}
+	if backend, ok := f.backend.(interface{ VirtualDirectory(string) bool }); ok {
+		n.synthetic = backend.VirtualDirectory(e.ID)
+	}
 	if e.Dir {
 		n.mode = 0700
 	} else {
@@ -223,7 +226,7 @@ func (f *FileSystem) list(ctx context.Context, n *Node, fresh bool) (result []an
 	var entries []anyshare.Entry
 	var err error
 	f.opts.Trace.Printf(ctx, "directory cache miss; fetching remote listing (forced=%t)", fresh)
-	if n.synthetic {
+	if n.synthetic && e.ID == "" {
 		entries, err = f.backend.Roots(ctx)
 	} else {
 		entries, err = f.backend.List(ctx, e.ID)
@@ -381,7 +384,11 @@ func (n *Node) ensureCacheLocked(ctx context.Context, truncate bool) (result err
 }
 
 func (n *Node) journalLocked() error {
-	data, err := json.MarshalIndent(RecoveryRecord{Entry: n.entry, Parent: anyshare.ParentID(n.entry.ID), Data: filepath.Base(n.cachePath), Updated: time.Now()}, "", "  ")
+	record := RecoveryRecord{Entry: n.entry, Parent: parentID(n.entry.ID), Data: filepath.Base(n.cachePath), Updated: time.Now()}
+	if backend, ok := n.f.backend.(*AccountBackend); ok {
+		record = backend.recoveryRecord(record)
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -437,7 +444,7 @@ func (n *Node) flushLocked(ctx context.Context) (result error) {
 	}
 	old := n.entry
 	n.f.opts.Trace.Printf(ctx, "uploading pending write: id=%q revision=%q", old.ID, old.Rev)
-	entry, err := n.f.backend.Upload(ctx, anyshare.ParentID(old.ID), old.Name, &old, n.cache, old.Size, old.Modified)
+	entry, err := n.f.backend.Upload(ctx, parentID(old.ID), old.Name, &old, n.cache, old.Size, old.Modified)
 	if err != nil {
 		n.f.opts.Logger.Printf("uncommitted write retained at %s", n.cachePath)
 		return err

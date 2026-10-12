@@ -249,9 +249,45 @@ continue because the official protocol exposes no job cancellation endpoint.
 		cmd.Use = "mount MOUNTPOINT"
 		cmd.Args = cobra.ExactArgs(1)
 		cmd.Short = "Mount remote libraries or a selected folder as a local filesystem"
-		cmd.Long = "Mount PKU NetDisk as a filesystem. The process stays in the foreground.\nOmit --root to expose all accessible libraries.\n\n" + mountPlatformHelp + "\n\nFiles up to --read-whole-file are fetched whole on first read. Larger files\nstart with --read-block-size ranges; sequential reads grow the fetch up to\n--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.\n--read-concurrency bounds active fetches; cached reads do not queue behind them.\nReads return when their requested bytes arrive; the shared range keeps filling.\nOnly a complete, validated range enters the disk cache. Unmount stops active\nfills. Size flags accept bytes or units such as 4MiB and 10GiB.\nDiagnostic sizes use IEC units; -b/--bytes shows exact byte counts. Larger fetches\nreduce round trips but use more bandwidth and memory. Set --read-whole-file 0\nand --read-ahead 0 for small on-demand ranges.\n\nReads and writes share --cache-limit. Clean data is evicted first; pending\nwrites are protected. Whole-file reads require the file to fit in this budget.\nWrites are uploaded on fsync/close. Interrupted writes may remain in the cache;\nuse recover to locate them. --read-only prevents remote file changes.\nAn expired session ends the mount.\n\n--verbose explains operations, cache decisions, queue waits and HTTP request\nphases on stderr. START and END lines share an operation number; a START\nwithout END shows an outstanding operation. Logs include paths and file IDs,\nbut omit credentials, request bodies and signed URL paths/queries.\n--debug additionally prints raw filesystem-driver diagnostics.\n\n" + remoteHelp
-		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --verbose 2> mount.log"
+		cmd.Long = `Mount PKU NetDisk as a filesystem. The process stays in the foreground.
+Omit --root to expose all accessible libraries of the selected account.
+--all-accounts mounts every saved account under its own first-level directory,
+named after the saved account. It cannot be combined with --account, --root,
+--server, explicit credentials or --no-save. All accounts must authenticate
+and list their libraries at startup. Account directories are read-only; files
+inside route to that account. Cross-account moves return EXDEV; copy instead.
+Capacity counts shared libraries on the same server once, with available
+space only where at least one account has write permission.
+
+` + mountPlatformHelp + `
+
+Files up to --read-whole-file are fetched whole on first read. Larger files
+start with --read-block-size ranges; sequential reads grow the fetch up to
+--read-ahead. Seeks reset that growth. Overlapping reads share one fetch.
+--read-concurrency bounds active fetches; cached reads do not queue behind them.
+Reads return when their requested bytes arrive; the shared range keeps filling.
+Only a complete, validated range enters the disk cache. Unmount stops active
+fills. Size flags accept bytes or units such as 4MiB and 10GiB.
+Diagnostic sizes use IEC units; -b/--bytes shows exact byte counts. Larger fetches
+reduce round trips but use more bandwidth and memory. Set --read-whole-file 0
+and --read-ahead 0 for small on-demand ranges.
+
+Reads and writes share --cache-limit. Clean data is evicted first; pending
+writes are protected. Whole-file reads require the file to fit in this budget.
+Writes are uploaded on fsync/close. Interrupted writes may remain in the cache;
+use recover to locate them. --read-only prevents remote file changes.
+An expired session ends the mount.
+
+--verbose explains operations, cache decisions, queue waits and HTTP request
+phases on stderr. START and END lines share an operation number; a START
+without END shows an outstanding operation. Logs include paths and file IDs,
+but omit credentials, request bodies and signed URL paths/queries.
+--debug additionally prints raw filesystem-driver diagnostics.
+
+` + remoteHelp
+		cmd.Example = mountPlatformExample + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --all-accounts" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 32MiB --read-ahead 64MiB\n  pkudisk-fuse mount " + mountPlatformPoint + " --read-whole-file 0 --read-block-size 1MiB --read-ahead 0" + "\n  pkudisk-fuse mount " + mountPlatformPoint + " --verbose 2> mount.log"
 		f := cmd.Flags()
+		f.BoolVar(&mount.allAccounts, "all-accounts", false, "mount every saved account in its own top-level directory; requires all accounts to be usable")
 		f.StringVar(&mount.root, "root", "", "remote library/folder path or gns:// ID to mount")
 		f.StringVar(&mount.cache, "cache-dir", defaultCache(), "private cache parent directory (0700); recover scans it")
 		mount.cacheLimit, mount.partSize, mount.read = 10<<30, 16<<20, vfs.DefaultReadOptions()
@@ -295,6 +331,13 @@ continue because the official protocol exposes no job cancellation endpoint.
 			return usageFailure(cmd, "cache limits and intervals must be nonnegative; --part-size must be at least 5242880 bytes")
 		}
 		if name == "mount" {
+			if mount.allAccounts {
+				for _, flag := range []string{"account", "root", "server", "username", "password-file", "credentials-file", "password-stdin", "no-save"} {
+					if cmd.Flags().Changed(flag) {
+						return usageFailure(cmd, "--all-accounts cannot be combined with --"+flag)
+					}
+				}
+			}
 			if err := mount.read.Validate(); err != nil {
 				return usageFailure(cmd, err.Error())
 			}
@@ -315,6 +358,15 @@ continue because the official protocol exposes no job cancellation endpoint.
 			mount.trace.Printf(cmd.Context(), "mount diagnostics enabled; version=%s OS=%s architecture=%s", installedVersion(), runtime.GOOS, runtime.GOARCH)
 		}
 		credentials.announce = name != "tui"
+		if name == "mount" {
+			mount.mountpoint, mount.timeout = args[0], timeout
+			source, err := prepareMount(cmd.Context(), credentials, mount)
+			if err != nil {
+				return err
+			}
+			defer source.Close()
+			return mountFileSystem(cmd.Context(), source, mount, cmd.ErrOrStderr())
+		}
 		session, server, account, err := authenticate(cmd.Context(), credentials)
 		if err != nil {
 			return err
@@ -349,10 +401,6 @@ continue because the official protocol exposes no job cancellation endpoint.
 			return runTransfer(ctx, client, name, args[0], destination, overwrite, archive, viaArchive, sizes, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		case "tui":
 			return runTUI(cmd.Context(), client, account, server, timeout, sizes, cmd.InOrStdin(), cmd.OutOrStdout())
-		case "mount":
-			mount.mountpoint = args[0]
-			mount.timeout = timeout
-			return mountFileSystem(cmd.Context(), client, session, mount, cmd.ErrOrStderr())
 		}
 		return nil
 	}
@@ -420,7 +468,9 @@ It requires no account or network connection. Stop the affected mount before
 copying retained contents, as an active mount may still be writing them.
 
 Each record shows a local data path, recorded remote name/ID, size, revision,
-and update time. Copy needed files to a permanent local directory, then use
+and update time. Multi-account mounts also record the owning account and server;
+select that account with --account when uploading recovered contents.
+Copy needed files to a permanent local directory, then use
 upload to save them to a chosen remote destination. Prefer a new file name
 when resolving a remote revision conflict. Remove old cache files only after
 checking that your copies or uploads contain the expected data.
@@ -452,6 +502,9 @@ reported explicitly; JSON uses []. Exit codes: 0 success, 1 scan failure,
 			fmt.Fprintf(cmd.OutOrStdout(), "Found %d uncommitted cached file(s) in %s:\n", len(records), cache)
 			for _, r := range records {
 				fmt.Fprintf(cmd.OutOrStdout(), "\nLocal file: %s\nRemote:     %s (%s)\nSize:       %s\nRevision:   %s\nUpdated:    %s\n", r.Data, r.Entry.Name, r.Entry.ID, sizes.label(r.Entry.Size), r.Entry.Rev, r.Updated.Format(time.RFC3339))
+				if r.Account != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Account:    %s (%s)\n", r.Account, r.Server)
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "\nStop the affected mount, copy needed local files, then upload to your chosen destination.\nFor a recovery example, run 'pkudisk-fuse recover --help'.")
 			return nil

@@ -145,12 +145,15 @@ func TestRecoverEmptyAndRecords(t *testing.T) {
 	cache := filepath.Join(root, "mount-test")
 	os.Mkdir(cache, 0700)
 	os.WriteFile(filepath.Join(cache, "data-file"), []byte("test"), 0600)
-	record := vfs.RecoveryRecord{Entry: anyshare.Entry{ID: "gns://library/file", Name: "report.txt", Size: 4, Rev: "rev"}, Parent: "gns://library", Data: "data-file"}
+	record := vfs.RecoveryRecord{Account: "work", Server: "https://disk.pku.edu.cn", Entry: anyshare.Entry{ID: "gns://library/file", Name: "report.txt", Size: 4, Rev: "rev"}, Parent: "gns://library", Data: "data-file"}
 	data, _ := json.Marshal(record)
 	os.WriteFile(filepath.Join(cache, "data-file.json"), data, 0600)
 	out, _, err := testExecute("recover", "--cache-dir", root)
 	if err != nil || !strings.Contains(out, filepath.Join(cache, "data-file")) || !strings.Contains(out, "report.txt") || !strings.Contains(out, "copy") {
 		t.Fatal(out, err)
+	}
+	if !strings.Contains(out, "Account:    work (https://disk.pku.edu.cn)") {
+		t.Fatal("recovery output omits the account identity", out)
 	}
 	out, _, err = testExecute("recover", "--cache-dir", root, "-b")
 	if err != nil || !strings.Contains(out, "Size:       4 bytes") {
@@ -161,8 +164,8 @@ func TestRecoverEmptyAndRecords(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &records) != nil || len(records) != 1 {
 		t.Fatal(out, err)
 	}
-	if records[0].Data != filepath.Join(cache, "data-file") {
-		t.Fatal("recover omitted absolute data path")
+	if records[0].Data != filepath.Join(cache, "data-file") || records[0].Account != "work" || records[0].Server != record.Server {
+		t.Fatal("recover omitted absolute data path or account identity")
 	}
 }
 func TestProgressRedirectedProducesNoEscapes(t *testing.T) {

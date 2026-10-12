@@ -14,7 +14,7 @@ With Go 1.26.9 or newer, install the command with:
 go install github.com/thezzisu/pkudisk-fuse/cmd/pkudisk-fuse@latest
 ```
 
-Use a version such as `@v0.3.8` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
+Use a version such as `@v0.3.9` instead of `@latest` to select a release. Add `GOBIN` (normally `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows) to your `PATH` if needed.
 
 ```sh
 pkudisk-fuse version
@@ -68,6 +68,9 @@ also honor `-b`; the TUI applies it to remote entries and transfer progress.
 Common short flags are `-a/--account`, `-j/--json`, `-f/--overwrite`,
 `-v/--verbose`, `-t/--io-timeout` and `-u/--username`, wherever the corresponding
 long flag is available. `-h/--help` remains help on every command.
+
+`--account/-a` selects one saved account by its exact name. Mount multiple
+accounts with `mount --all-accounts`; the wildcard `*` has no special meaning.
 
 ```sh
 bin/pkudisk-fuse ls -a work
@@ -228,6 +231,37 @@ hashes, and requires already indexed file and folder search matches. Indexing
 new uploads is asynchronous, so existing metadata supplies the matched-search
 checks. The regular CI suite exercises these response shapes without credentials
 and tests single-Enter prompt submission in a private Windows console.
+
+## Mount multiple accounts
+
+```sh
+mkdir -p ~/PKUNetDisk
+bin/pkudisk-fuse mount ~/PKUNetDisk --all-accounts
+# Windows: pkudisk-fuse.exe mount P: --all-accounts
+```
+
+The first level contains each saved account name, followed by that account's
+accessible libraries. For example, `~/PKUNetDisk/work/My library/Reports`.
+Account directories are virtual and read-only; files inside use the owning
+account's permissions and session. Each account has separate inode and cache
+identities even when several accounts can see the same shared library.
+Reads and writes share the mount's existing cache budget and read concurrency.
+
+All saved accounts must authenticate and list their libraries before the mount
+starts. Account names must be usable directory names on the current platform;
+Windows also rejects names that collide ignoring case. Each session renews
+independently, and an expired session ends the mount with the account named in
+the error. The account set stays fixed until the next mount; the saved default
+is unchanged.
+
+`--all-accounts` is only available for `mount`, and cannot be combined with
+`--account`, `--root`, `--server`, explicit credentials, or `--no-save`.
+Cross-account moves return `EXDEV` before changing any remote file. Use a copy
+followed by deletion when needed. Capacity counts a shared library on the same
+server once; its free space counts if any mounted account can write there.
+Read-only libraries contribute only used space, and `--read-only` reports zero
+available space. Recovery records for this mode include the owning account and
+server alongside the original remote IDs; select that account when reuploading.
 
 ## File behavior
 

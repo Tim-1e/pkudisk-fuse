@@ -12,6 +12,8 @@ import (
 )
 
 type RecoveryRecord struct {
+	Account string         `json:"account,omitempty"`
+	Server  string         `json:"server,omitempty"`
 	Entry   anyshare.Entry `json:"entry"`
 	Parent  string         `json:"parent"`
 	Data    string         `json:"data"`

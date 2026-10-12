@@ -71,6 +71,14 @@ it. Failed quota/permission queries are reported instead of retaining stale free
 space. Fixtures cover writable custom/user libraries alongside a read-only
 public library; live acceptance verified public and personal library responses.
 
+With `mount --all-accounts`, virtual account directories route requests to
+separate authenticated clients. Internal IDs include the account name and
+normalized server to isolate inodes, metadata and cached contents. Shared
+libraries are deduplicated by normalized server and original library ID for
+capacity reporting, using writable access from any participating account.
+Cross-account rename is rejected before flushing or temporarily renaming a
+source. Recovery journals record the account/server and original remote IDs.
+
 The optional `util` command group currently exposes three small server-side
 operations:
 

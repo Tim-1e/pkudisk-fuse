@@ -28,6 +28,12 @@ pkudisk-fuse.exe mount P:
 
 An empty directory can also be used as a Windows mountpoint. Ctrl-C unmounts the filesystem. Other mount flags, including `--root`, `--read-only`, `--cache-limit` and `--io-timeout`, have the same meaning on each platform.
 
+`mount --all-accounts` works with both drivers. Saved account names become the
+first-level directories, with independent remote/cache identities and sessions.
+Account names must be valid local directory names; Windows rejects reserved
+names and case-insensitive collisions. Cross-account rename is rejected before
+any remote mutation. Shared library capacity is counted once per server.
+
 Use `mount P: --verbose 2> mount.log` from a local folder to diagnose application freezes. Verbose logs record WinFsp callbacks before handle/node locks, plus metadata decisions, cached and remote reads, HTTP connection/header/body phases and operation durations. A numbered `START` without its matching `END` identifies outstanding work in this process. `--debug` adds driver protocol diagnostics when needed; neither flag can observe a request that never reaches this process. Linux/macOS provide the same verbose cache/HTTP diagnostics and go-fuse callback logging.
 
 WinFsp opens directory handles for attribute/security probes as well as enumeration. These opens do not fetch directory contents; the first `Readdir` loads a snapshot. Known paths avoid ancestor listing walks. Metadata from a recent listing satisfies opens and attributes until the existing `--cache-ttl` expires. Concurrent metadata/listing requests share a fetch, and metadata HTTP calls run outside the file lock. An external rename/deletion invalidates obsolete path/listing state, and older enumeration snapshots cannot replace newer metadata.

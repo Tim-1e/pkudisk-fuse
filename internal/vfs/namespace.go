@@ -3,11 +3,15 @@ package vfs
 import (
 	"context"
 	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
+	"syscall"
 )
 
 // AnyShare exposes move and rename separately. Use a unique intermediate name
 // and compensate on failure. Same-directory replacement uses one server call.
 func (f *FileSystem) moveAndRename(ctx context.Context, e anyshare.Entry, oldParent, newParent, newName string, replace bool) (anyshare.Entry, error) {
+	if libraryID(oldParent) != libraryID(newParent) {
+		return anyshare.Entry{}, syscall.EXDEV
+	}
 	current := e
 	var err error
 	if e.Name != newName || replace {
@@ -37,7 +41,7 @@ func (f *FileSystem) moveAndRename(ctx context.Context, e anyshare.Entry, oldPar
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), f.opts.IOTimeout)
 	defer cancel()
 	rollbackErr := error(nil)
-	if anyshare.ParentID(current.ID) != oldParent && current.ID != "" {
+	if parentID(current.ID) != oldParent && current.ID != "" {
 		var restored anyshare.Entry
 		restored, rollbackErr = f.backend.Move(rollbackCtx, current, oldParent)
 		if rollbackErr == nil {

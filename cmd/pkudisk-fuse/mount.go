@@ -14,33 +14,15 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/thezzisu/pkudisk-fuse/internal/anyshare"
-	"github.com/thezzisu/pkudisk-fuse/internal/auth"
 	"github.com/thezzisu/pkudisk-fuse/internal/localfile"
 	"github.com/thezzisu/pkudisk-fuse/internal/vfs"
 )
 
-func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth.Session, opts mountOptions, output io.Writer) error {
-	root, cache := opts.root, localfile.ExpandPath(opts.cache)
+func mountFileSystem(ctx context.Context, source *mountSource, opts mountOptions, output io.Writer) error {
+	cache := localfile.ExpandPath(opts.cache)
 	readOnly, debug := opts.readOnly, opts.debug
-	cacheLimit, partSize := opts.cacheLimit, opts.partSize
+	cacheLimit := opts.cacheLimit
 	ttl, timeout, refreshInterval := opts.ttl, opts.timeout, opts.refreshInterval
-	client.PartSize = partSize
-	var selected *anyshare.Entry
-	if root != "" && root != "/" {
-		entry, err := client.Resolve(ctx, root)
-		if err != nil {
-			return fmt.Errorf("select mount root: %w", err)
-		}
-		if !entry.Dir {
-			return syscall.ENOTDIR
-		}
-		selected = &entry
-	} else {
-		if _, err := client.Roots(ctx); err != nil {
-			return err
-		}
-	}
 	point, err := filepath.Abs(localfile.ExpandPath(opts.mountpoint))
 	if err != nil {
 		return err
@@ -59,7 +41,7 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 	if len(contents) != 0 {
 		return errors.New("mountpoint must be an empty directory")
 	}
-	filesystem, err := vfs.New(client, vfs.Options{Root: selected, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, Read: &opts.read, TTL: ttl, IOTimeout: timeout, Trace: opts.trace})
+	filesystem, err := vfs.New(source.backend, vfs.Options{Root: source.root, ReadOnly: readOnly, CacheDir: cache, CacheLimit: cacheLimit, Read: &opts.read, TTL: ttl, IOTimeout: timeout, Trace: opts.trace})
 	if err != nil {
 		return err
 	}
@@ -73,22 +55,8 @@ func mountFileSystem(ctx context.Context, client *anyshare.Client, session *auth
 		return fmt.Errorf("FUSE mount: %w", err)
 	}
 	fmt.Fprintf(output, "Mounted PKU NetDisk at %s; cache %s. Ctrl-C unmounts.\n", point, filesystem.CachePath())
-	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
-	maintenanceDone := make(chan struct{})
-	maintenanceFailed := make(chan error, 1)
-	go func() {
-		defer close(maintenanceDone)
-		session.KeepAlive(maintenanceCtx, refreshInterval, func(err error) {
-			if err == nil {
-				fmt.Fprintln(output, "Authentication session renewed.")
-			} else if errors.Is(err, auth.ErrSessionExpired) {
-				maintenanceFailed <- err
-			} else {
-				fmt.Fprintf(output, "Session renewal will retry: %v\n", err)
-			}
-		})
-	}()
-	defer func() { cancelMaintenance(); <-maintenanceDone }()
+	maintenanceFailed, stopMaintenance := source.maintain(ctx, refreshInterval, output)
+	defer stopMaintenance()
 	done := make(chan struct{})
 	go func() { server.Wait(); close(done) }()
 	for {
