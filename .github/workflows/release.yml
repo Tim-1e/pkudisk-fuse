@@ -49,4 +49,6 @@ jobs:
           gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
             --notes-file "docs/releases/$RELEASE_TAG.md" "${flags[@]}" \
             dist/*.tar.gz dist/*.zip dist/checksums.txt
-          GOPROXY=https://proxy.golang.org go list -m "github.com/thezzisu/pkudisk-fuse@$RELEASE_TAG"
+          if [[ "$GH_REPO" == thezzisu/pkudisk-fuse ]]; then
+            GOPROXY=https://proxy.golang.org go list -m "github.com/thezzisu/pkudisk-fuse@$RELEASE_TAG"
+          fi

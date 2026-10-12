@@ -36,6 +36,8 @@ Go 1.26 patch release, `CGO_ENABLED=0` and `-trimpath`. The job checks the nativ
 binary's version, publishes the archives and checksums with `gh release create`,
 and requests the tagged module from Go's official proxy. Rerun a failed workflow
 before publication; it does not replace an existing release or its assets.
+The proxy request only runs in the upstream repository. Fork releases retain
+the upstream module path and distribute their own tagged binary archives.
 
 Archives include LICENSE, NOTICE, README, platform and transfer documentation,
 shell completions and dependency license files. `scripts/release-files.sh`
